@@ -30,7 +30,7 @@ Your project should look something like this:
 └── www/
     ├── example.com/
     │   └── index.js
-    └── anotherdomain.com/
+    └── subdomain.example.com/
         └── index.js
 ```
 
@@ -38,10 +38,11 @@ Your project should look something like this:
 
 ```javascript
 // /srv/roster/server.js
-const Roster = require('roster-express');
+const Roster = require('roster-server');
 
 const options = {
     maintainerEmail: 'admin@example.com',
+    greenlockConfigDir: '/srv/greenlock.d', // Path to your Greenlock configuration directory
     wwwPath: '/srv/www', // Path to your 'www' directory (default: '../www')
     staging: false // Set to true for Let's Encrypt staging environment
 };
@@ -54,12 +55,59 @@ server.start();
 
 Each domain should have its own folder under `www`, containing an `index.js` that exports a request handler function.
 
-For example, `www/example.com/index.js`:
+### Examples
 
-```javascript
-module.exports = (req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Hello from example.com!');
+I'll help analyze the example files shown. You have 3 different implementations demonstrating various ways to handle requests in RosterServer:
+
+1. **Basic HTTP Handler**:
+```javascript:demo/www/example.com/index.js
+module.exports = (server) => {
+    return (req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
+    };
+};
+```
+
+2. **Express App**:
+```javascript:demo/www/express.example.com/index.js
+const express = require('express');
+
+module.exports = (server) => {
+    const app = express();
+    app.get('/', (req, res) => {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
+    });
+
+    return app;
+}
+```
+
+3. **Socket.IO Server**:
+```javascript:demo/www/sio.example.com/index.js
+const { Server } = require('socket.io');
+
+module.exports = (server) => {
+    const io = new Server(server);
+
+    io.on('connection', (socket) => {
+        console.log('A user connected');
+
+        socket.on('chat:message', (msg) => {
+            console.log('Message received:', msg);
+            io.emit('chat:message', msg);
+        });
+
+        socket.on('disconnect', () => {
+            console.log('User disconnected');
+        });
+    });
+
+    return (req, res) => {
+        res.writeHead(200);
+        res.end('Socket.IO server running');
+    };
 };
 ```
 
@@ -76,7 +124,7 @@ And that's it! Your server is now hosting multiple HTTPS-enabled sites. 🎉
 
 ### Automatic SSL Certificate Management
 
-RosterExpress uses [greenlock-express](https://www.npmjs.com/package/greenlock-express) to automatically obtain and renew SSL certificates from Let's Encrypt. No need to manually manage certificates ever again. Unless you enjoy that sort of thing. 🧐
+RosterServer uses [greenlock-express](https://www.npmjs.com/package/greenlock-express) to automatically obtain and renew SSL certificates from Let's Encrypt. No need to manually manage certificates ever again. Unless you enjoy that sort of thing. 🧐
 
 ### Redirects from `www`
 
@@ -84,11 +132,11 @@ All requests to `www.yourdomain.com` are automatically redirected to `yourdomain
 
 ### Dynamic Site Loading
 
-Add a new site? Just drop it into the `www` folder with an `index.js` file, and RosterExpress will handle the rest. No need to restart the server. Well, you might need to restart the server. But that's what `nodemon` is for, right? 😅
+Add a new site? Just drop it into the `www` folder with an `index.js` file, and RosterServer will handle the rest. No need to restart the server. Well, you might need to restart the server. But that's what `nodemon` is for, right? 😅
 
 ## ⚙️ Configuration Options 
 
-When creating a new `RosterExpress` instance, you can pass the following options:
+When creating a new `RosterServer` instance, you can pass the following options:
 
 - `maintainerEmail` (string): Your email for Let's Encrypt notifications.
 - `wwwPath` (string): Path to your `www` directory containing your sites.
@@ -97,14 +145,14 @@ When creating a new `RosterExpress` instance, you can pass the following options
 
 ## 🧂 A Touch of Magic
 
-You might be thinking, "But setting up HTTPS and virtual hosts is supposed to be complicated and time-consuming!" Well, not anymore. With RosterExpress, you can get back to writing code that matters, like defending Earth from alien invaders! 👾👾👾
+You might be thinking, "But setting up HTTPS and virtual hosts is supposed to be complicated and time-consuming!" Well, not anymore. With RosterServer, you can get back to writing code that matters, like defending Earth from alien invaders! 👾👾👾
 
 
 ## 🤝 Contributing
 
 Feel free to submit issues or pull requests. Or don't. I'm not your boss. 😜
 
-If you find any issues or have suggestions for improvement, please open an issue or submit a pull request on the [GitHub repository](https://github.com/clasen/RosterExpress).
+If you find any issues or have suggestions for improvement, please open an issue or submit a pull request on the [GitHub repository](https://github.com/clasen/RosterServer).
 
 ## 🙏 Acknowledgments 
 
