@@ -26,6 +26,7 @@ Your project should look something like this:
 
 ```
 /srv/
+├── greenlock.d/
 ├── roster/server.js
 └── www/
     ├── example.com/
@@ -61,7 +62,7 @@ I'll help analyze the example files shown. You have 3 different implementations 
 
 1. **Basic HTTP Handler**:
 ```javascript:demo/www/example.com/index.js
-module.exports = (server) => {
+module.exports = (httpsServer) => {
     return (req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
@@ -73,7 +74,7 @@ module.exports = (server) => {
 ```javascript:demo/www/express.example.com/index.js
 const express = require('express');
 
-module.exports = (server) => {
+module.exports = (httpsServer) => {
     const app = express();
     app.get('/', (req, res) => {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -88,8 +89,8 @@ module.exports = (server) => {
 ```javascript:demo/www/sio.example.com/index.js
 const { Server } = require('socket.io');
 
-module.exports = (server) => {
-    const io = new Server(server);
+module.exports = (httpsServer) => {
+    const io = new Server(httpsServer);
 
     io.on('connection', (socket) => {
         console.log('A user connected');

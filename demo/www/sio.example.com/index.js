@@ -1,7 +1,7 @@
 const { Server } = require('socket.io');
 
-module.exports = (server) => {
-    const io = new Server(server);
+module.exports = (httpsServer) => {
+    const io = new Server(httpsServer);
 
     io.on('connection', (socket) => {
         console.log('A user connected');

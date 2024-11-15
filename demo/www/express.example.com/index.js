@@ -1,6 +1,6 @@
 const express = require('express');
 
-module.exports = (server) => {
+module.exports = (httpsServer) => {
     const app = express();
     app.get('/', (req, res) => {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
