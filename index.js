@@ -21,9 +21,6 @@ class Roster {
     }
 
     loadSites() {
-        this.portMap = new Map();
-        this.portMap.set(this.port, new Set());
-
         fs.readdirSync(this.wwwPath, { withFileTypes: true })
             .filter(dirent => dirent.isDirectory())
             .forEach((dirent) => {
@@ -44,20 +41,13 @@ class Roster {
                 }
 
                 if (siteApp) {
-                    const sitePort = siteApp.config?.port || this.port;
-                    
-                    if (!this.portMap.has(sitePort)) {
-                        this.portMap.set(sitePort, new Set());
-                    }
-                    
                     const domainEntries = [domain, `www.${domain}`];
                     this.domains.push(...domainEntries);
                     domainEntries.forEach(d => {
-                        this.sites[d] = { app: siteApp, port: sitePort };
-                        this.portMap.get(sitePort).add(d);
+                        this.sites[d] = siteApp;
                     });
 
-                    console.log(`✅ Loaded site: ${domain} (using ${loadedFile}) on port ${sitePort}`);
+                    console.log(`✅ Loaded site: ${domain} (using ${loadedFile})`);
                 } else {
                     console.warn(`⚠️ No index file (js/mjs/cjs) found in ${domainPath}`);
                 }
@@ -124,7 +114,7 @@ class Roster {
                 renewStagger: "3d",
                 accountKeyType: "EC-P256",
                 serverKeyType: "RSA-2048",
-                subscriberEmail: this.email
+                subscriberEmail: this.maintainerEmail
             },
             sites: sitesConfig
         };
@@ -149,7 +139,7 @@ class Roster {
         console.log(`📁 config.json generated at ${configPath}`);
     }
 
-    handleRequest(req, res, port) {
+    handleRequest(req, res) {
         const host = req.headers.host || '';
 
         if (host.startsWith('www.')) {
@@ -159,9 +149,9 @@ class Roster {
             return;
         }
 
-        const siteInfo = this.sites[host];
-        if (siteInfo && siteInfo.port === port) {
-            siteInfo.app(req, res);
+        const siteApp = this.sites[host];
+        if (siteApp) {
+            siteApp(req, res);
         } else {
             res.writeHead(404);
             res.end('Site not found');
@@ -169,29 +159,26 @@ class Roster {
     }
 
     initServers(glx) {
-        const servers = new Map();
+        const app = (req, res) => {
+            this.handleRequest(req, res);
+        };
 
-        for (const [port, domains] of this.portMap.entries()) {
-            const app = (req, res) => {
-                this.handleRequest(req, res, port);
-            };
+        // Obtener los servidores sin iniciarlos
+        const httpsServer = glx.httpsServer(null, app);
+        const httpServer = glx.httpServer();
 
-            const httpsServer = glx.httpsServer(null, app);
-            servers.set(port, httpsServer);
-
-            for (const host of domains) {
-                if (!host.startsWith('www.')) {
-                    const siteInfo = this.sites[host];
-                    const appInstance = siteInfo.app(httpsServer);
-                    siteInfo.app = appInstance;
-                    this.sites[`www.${host}`].app = appInstance;
-                    console.log(`🔧 Initialized server for ${host} on port ${port}`);
-                }
+        // Inicializar las aplicaciones Socket.IO con el servidor HTTPS
+        for (const [host, siteApp] of Object.entries(this.sites)) {
+            if (!host.startsWith('www.')) {
+                const appInstance = siteApp(httpsServer);
+                this.sites[host] = appInstance;
+                this.sites[`www.${host}`] = appInstance;
+                console.log(`🔧 Initialized server for ${host}`);
             }
         }
 
-        const httpServer = glx.httpServer();
-        return { httpsServers: servers, httpServer };
+        // Retornar los servidores para iniciarlos después
+        return { httpsServer, httpServer };
     }
 
     start() {
@@ -201,29 +188,25 @@ class Roster {
         const greenlock = Greenlock.init({
             packageRoot: __dirname,
             configDir: this.greenlockStorePath,
-            maintainerEmail: this.email,
+            maintainerEmail: this.maintainerEmail,
             cluster: this.cluster,
             staging: this.staging
         });
 
+        // Usar una promesa para manejar la inicialización
         return new Promise((resolve, reject) => {
             try {
                 greenlock.ready((glx) => {
-                    const { httpsServers, httpServer } = this.initServers(glx);
+                    const { httpsServer, httpServer } = this.initServers(glx);
 
-                    const httpsPromises = Array.from(httpsServers.entries()).map(([port, server]) => {
-                        return new Promise((resolveServer) => {
-                            server.listen(port, '0.0.0.0', () => {
-                                console.log(`ℹ️ HTTPS server listening on port ${port}`);
-                                resolveServer();
-                            });
-                        });
-                    });
+                    // Primero iniciar el servidor HTTPS
+                    httpsServer.listen(this.port, '0.0.0.0', () => {
+                        console.log('ℹ️ HTTPS server listening on port 443');
 
-                    Promise.all(httpsPromises).then(() => {
+                        // Después iniciar el servidor HTTP
                         httpServer.listen(80, '0.0.0.0', () => {
                             console.log('ℹ️ HTTP server listening on port 80');
-                            resolve({ httpsServers, httpServer });
+                            resolve({ httpsServer, httpServer });
                         });
                     });
                 });
