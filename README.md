@@ -43,9 +43,8 @@ const Roster = require('roster-server');
 
 const options = {
     maintainerEmail: 'admin@example.com',
-    greenlockConfigDir: '/srv/greenlock.d', // Path to your Greenlock configuration directory
-    wwwPath: '/srv/www', // Path to your 'www' directory (default: '../www')
-    staging: false // Set to true for Let's Encrypt staging environment
+    greenlockStorePath: '/srv/greenlock.d', // Path to your Greenlock configuration directory
+    wwwPath: '/srv/www' // Path to your 'www' directory (default: '../www')
 };
 
 const server = new Roster(options);
@@ -141,7 +140,7 @@ When creating a new `RosterServer` instance, you can pass the following options:
 
 - `maintainerEmail` (string): Your email for Let's Encrypt notifications.
 - `wwwPath` (string): Path to your `www` directory containing your sites.
-- `greenlockConfigDir` (string): Directory for Greenlock configuration.
+- `greenlockStorePath` (string): Directory for Greenlock configuration.
 - `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).
 
 ## 🧂 A Touch of Magic

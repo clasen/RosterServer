@@ -5,11 +5,19 @@ const Greenlock = require('greenlock-express');
 class Roster {
     constructor(options = {}) {
         this.maintainerEmail = options.maintainerEmail || 'admin@example.com';
-        this.wwwPath = options.wwwPath || path.join(__dirname, '..', '..', '..', 'www');
-        this.greenlockConfigDir = options.greenlockConfigDir || path.join(__dirname, '..', '..', 'greenlock.d');
+        const basePath = options.basePath || path.join(__dirname, '..', '..', '..');
+        this.wwwPath = options.wwwPath || path.join(basePath, 'www');
+        this.greenlockStorePath = options.greenlockStorePath || path.join(basePath, 'greenlock.d');
         this.staging = options.staging || false;
+        this.cluster = options.cluster || false;
         this.domains = [];
         this.sites = {};
+
+        const port = options.port || 443;
+        if (port === 80) {
+            throw new Error('Port 80 is reserved for ACME challenge. Please use a different port.');
+        }
+        this.port = port;
     }
 
     loadSites() {
@@ -47,7 +55,7 @@ class Roster {
     }
 
     generateConfigJson() {
-        const configDir = this.greenlockConfigDir;
+        const configDir = this.greenlockStorePath;
         const configPath = path.join(configDir, 'config.json');
 
         if (!fs.existsSync(configDir)) {
@@ -95,7 +103,7 @@ class Roster {
             defaults: {
                 store: {
                     module: "greenlock-store-fs",
-                    basePath: this.greenlockConfigDir
+                    basePath: this.greenlockStorePath
                 },
                 challenges: {
                     "http-01": {
@@ -179,9 +187,9 @@ class Roster {
 
         const greenlock = Greenlock.init({
             packageRoot: __dirname,
-            configDir: this.greenlockConfigDir,
+            configDir: this.greenlockStorePath,
             maintainerEmail: this.maintainerEmail,
-            cluster: false,
+            cluster: this.cluster,
             staging: this.staging
         });
 
@@ -192,7 +200,7 @@ class Roster {
                     const { httpsServer, httpServer } = this.initServers(glx);
 
                     // Primero iniciar el servidor HTTPS
-                    httpsServer.listen(443, '0.0.0.0', () => {
+                    httpsServer.listen(this.port, '0.0.0.0', () => {
                         console.log('ℹ️ HTTPS server listening on port 443');
 
                         // Después iniciar el servidor HTTP
