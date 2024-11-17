@@ -114,7 +114,7 @@ class Roster {
                 renewStagger: "3d",
                 accountKeyType: "EC-P256",
                 serverKeyType: "RSA-2048",
-                subscriberEmail: this.maintainerEmail
+                subscriberEmail: this.email
             },
             sites: sitesConfig
         };
@@ -188,7 +188,7 @@ class Roster {
         const greenlock = Greenlock.init({
             packageRoot: __dirname,
             configDir: this.greenlockStorePath,
-            maintainerEmail: this.maintainerEmail,
+            maintainerEmail: this.email,
             cluster: this.cluster,
             staging: this.staging
         });
