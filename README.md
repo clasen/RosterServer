@@ -42,7 +42,7 @@ Your project should look something like this:
 const Roster = require('roster-server');
 
 const options = {
-    maintainerEmail: 'admin@example.com',
+    email: 'admin@example.com',
     greenlockStorePath: '/srv/greenlock.d', // Path to your Greenlock configuration directory
     wwwPath: '/srv/www' // Path to your 'www' directory (default: '../www')
 };
@@ -138,7 +138,7 @@ Add a new site? Just drop it into the `www` folder with an `index.js` file, and 
 
 When creating a new `RosterServer` instance, you can pass the following options:
 
-- `maintainerEmail` (string): Your email for Let's Encrypt notifications.
+- `email` (string): Your email for Let's Encrypt notifications.
 - `wwwPath` (string): Path to your `www` directory containing your sites.
 - `greenlockStorePath` (string): Directory for Greenlock configuration.
 - `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).

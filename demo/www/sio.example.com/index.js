@@ -1,6 +1,6 @@
 const { Server } = require('socket.io');
 
-module.exports = (httpsServer) => {
+const app = (httpsServer) => {
     const io = new Server(httpsServer);
 
     io.on('connection', (socket) => {
@@ -22,3 +22,9 @@ module.exports = (httpsServer) => {
         res.end('Socket.IO server running');
     };
 };
+
+app.config = {
+    port: 3334,
+};
+
+module.exports = app;
