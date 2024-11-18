@@ -201,7 +201,7 @@ class Roster {
 
                     // Primero iniciar el servidor HTTPS
                     httpsServer.listen(this.port, '0.0.0.0', () => {
-                        console.log('ℹ️ HTTPS server listening on port 443');
+                        console.log('ℹ️ HTTPS server listening on port ' + this.port);
 
                         // Después iniciar el servidor HTTP
                         httpServer.listen(80, '0.0.0.0', () => {
