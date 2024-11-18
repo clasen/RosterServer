@@ -158,29 +158,6 @@ class Roster {
         }
     }
 
-    initServers(glx) {
-        const app = (req, res) => {
-            this.handleRequest(req, res);
-        };
-
-        // Obtener los servidores sin iniciarlos
-        const httpsServer = glx.httpsServer(null, app);
-        const httpServer = glx.httpServer();
-
-        // Inicializar las aplicaciones Socket.IO con el servidor HTTPS
-        for (const [host, siteApp] of Object.entries(this.sites)) {
-            if (!host.startsWith('www.')) {
-                const appInstance = siteApp(httpsServer);
-                this.sites[host] = appInstance;
-                this.sites[`www.${host}`] = appInstance;
-                console.log(`🔧 Initialized server for ${host}`);
-            }
-        }
-
-        // Retornar los servidores para iniciarlos después
-        return { httpsServer, httpServer };
-    }
-
     start() {
         this.loadSites();
         this.generateConfigJson();
@@ -193,26 +170,31 @@ class Roster {
             staging: this.staging
         });
 
-        // Usar una promesa para manejar la inicialización
-        return new Promise((resolve, reject) => {
-            try {
-                greenlock.ready((glx) => {
-                    const { httpsServer, httpServer } = this.initServers(glx);
+        const app = (req, res) => {
+            this.handleRequest(req, res);
+        };
 
-                    // Primero iniciar el servidor HTTPS
-                    httpsServer.listen(this.port, '0.0.0.0', () => {
-                        console.log('ℹ️ HTTPS server listening on port ' + this.port);
+        greenlock.ready(glx => {
+            // Obtener los servidores sin iniciarlos
+            const httpsServer = glx.httpsServer(null, app);
+            const httpServer = glx.httpServer();
 
-                        // Después iniciar el servidor HTTP
-                        httpServer.listen(80, '0.0.0.0', () => {
-                            console.log('ℹ️ HTTP server listening on port 80');
-                            resolve({ httpsServer, httpServer });
-                        });
-                    });
-                });
-            } catch (error) {
-                reject(error);
+            for (const [host, siteApp] of Object.entries(this.sites)) {
+                if (!host.startsWith('www.')) {
+                    const appInstance = siteApp(httpsServer);
+                    this.sites[host] = appInstance;
+                    this.sites[`www.${host}`] = appInstance;
+                    console.log(`🔧 Initialized server for ${host}`);
+                }
             }
+
+            httpServer.listen(80, '0.0.0.0', () => {
+                console.log('ℹ️ HTTP server listening on port 80');
+            });
+
+            httpsServer.listen(this.port, '0.0.0.0', () => {
+                console.log('ℹ️ HTTPS server listening on port ' + this.port);
+            });
         });
     }
 }
