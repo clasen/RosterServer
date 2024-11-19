@@ -12,6 +12,8 @@ class Roster {
         this.cluster = options.cluster || false;
         this.domains = [];
         this.sites = {};
+        this.hostname = options.hostname || '0.0.0.0';
+        this.filename = options.filename || 'index';
 
         const port = options.port || 443;
         if (port === 80) {
@@ -27,7 +29,7 @@ class Roster {
                 const domain = dirent.name;
                 const domainPath = path.join(this.wwwPath, domain);
 
-                const possibleIndexFiles = ['index.js', 'index.mjs', 'index.cjs'];
+                const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
                 let siteApp;
                 let loadedFile;
 
@@ -188,11 +190,11 @@ class Roster {
                 }
             }
 
-            httpServer.listen(80, '0.0.0.0', () => {
+            httpServer.listen(80, this.hostname, () => {
                 console.log('ℹ️ HTTP server listening on port 80');
             });
 
-            httpsServer.listen(this.port, '0.0.0.0', () => {
+            httpsServer.listen(this.port, this.hostname, () => {
                 console.log('ℹ️ HTTPS server listening on port ' + this.port);
             });
         });
