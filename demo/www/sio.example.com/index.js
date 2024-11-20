@@ -23,8 +23,4 @@ const app = (httpsServer) => {
     };
 };
 
-app.config = {
-    port: 3334,
-};
-
 module.exports = app;

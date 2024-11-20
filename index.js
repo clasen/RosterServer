@@ -17,12 +17,20 @@ class Roster {
 
         const port = options.port || 443;
         if (port === 80) {
-            throw new Error('Port 80 is reserved for ACME challenge. Please use a different port.');
+            throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
         this.port = port;
+
+        this.loadSites();
     }
 
     loadSites() {
+        // Check if wwwPath exists
+        if (!fs.existsSync(this.wwwPath)) {
+            console.warn(`⚠️  WWW path does not exist: ${this.wwwPath}`);
+            return;
+        }
+
         fs.readdirSync(this.wwwPath, { withFileTypes: true })
             .filter(dirent => dirent.isDirectory())
             .forEach((dirent) => {
@@ -49,9 +57,9 @@ class Roster {
                         this.sites[d] = siteApp;
                     });
 
-                    console.log(`✅ Loaded site: ${domain} (using ${loadedFile})`);
+                    console.log(`✅  Loaded site: ${domain} (using ${loadedFile})`);
                 } else {
-                    console.warn(`⚠️ No index file (js/mjs/cjs) found in ${domainPath}`);
+                    console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
                 }
             });
     }
@@ -129,16 +137,16 @@ class Roster {
             const currentConfigContentFormatted = JSON.stringify(currentConfig, null, 2);
 
             if (newConfigContent === currentConfigContentFormatted) {
-                console.log('ℹ️ Configuration has not changed. config.json will not be overwritten.');
+                console.log('ℹ️  Configuration has not changed. config.json will not be overwritten.');
                 return;
             }
-            console.log('🔄 Configuration has changed. config.json will be updated.');
+            console.log('🔄  Configuration has changed. config.json will be updated.');
         } else {
-            console.log('🆕 config.json does not exist. A new one will be created.');
+            console.log('🆕  config.json does not exist. A new one will be created.');
         }
 
         fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
-        console.log(`📁 config.json generated at ${configPath}`);
+        console.log(`📁  config.json generated at ${configPath}`);
     }
 
     handleRequest(req, res) {
@@ -160,8 +168,28 @@ class Roster {
         }
     }
 
+    registerSite(domain, requestHandler) {
+        if (!domain) {
+            throw new Error('Domain is required');
+        }
+        if (typeof requestHandler !== 'function') {
+            throw new Error('requestHandler must be a function');
+        }
+
+        const domainEntries = [domain];
+        if ((domain.match(/\./g) || []).length < 2) {
+            domainEntries.push(`www.${domain}`);
+        }
+
+        this.domains.push(...domainEntries);
+        domainEntries.forEach(d => {
+            this.sites[d] = requestHandler;
+        });
+
+        console.log(`✅  Manually registered site: ${domain}`);
+    }
+
     start() {
-        this.loadSites();
         this.generateConfigJson();
 
         const greenlock = Greenlock.init({
@@ -191,11 +219,11 @@ class Roster {
             }
 
             httpServer.listen(80, this.hostname, () => {
-                console.log('ℹ️ HTTP server listening on port 80');
+                console.log('ℹ️  HTTP server listening on port 80');
             });
 
             httpsServer.listen(this.port, this.hostname, () => {
-                console.log('ℹ️ HTTPS server listening on port ' + this.port);
+                console.log('ℹ️  HTTPS server listening on port ' + this.port);
             });
         });
     }

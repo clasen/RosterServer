@@ -1,6 +1,6 @@
 {
     "name": "roster-server",
-    "version": "1.5.2",
+    "version": "1.5.8",
     "description": "👾 RosterServer - A domain host router to host multiple HTTPS.",
     "main": "index.js",
     "scripts": {
