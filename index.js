@@ -15,7 +15,7 @@ class Roster {
         this.hostname = options.hostname || '0.0.0.0';
         this.filename = options.filename || 'index';
 
-        const port = options.port || 443;
+        const port = options.port === undefined ? 443 : options.port;
         if (port === 80) {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
@@ -168,7 +168,7 @@ class Roster {
         }
     }
 
-    registerSite(domain, requestHandler) {
+    register(domain, requestHandler) {
         if (!domain) {
             throw new Error('Domain is required');
         }
