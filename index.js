@@ -20,54 +20,57 @@ class Roster {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
         this.port = port;
-
-        this.loadSites();
     }
 
-    loadSites() {
+    async loadSites() {
         // Check if wwwPath exists
         if (!fs.existsSync(this.wwwPath)) {
             console.warn(`⚠️  WWW path does not exist: ${this.wwwPath}`);
             return;
         }
 
-        fs.readdirSync(this.wwwPath, { withFileTypes: true })
-            .filter(dirent => dirent.isDirectory())
-            .forEach(async (dirent) => {
-                const domain = dirent.name;
-                const domainPath = path.join(this.wwwPath, domain);
+        const sites = fs.readdirSync(this.wwwPath, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory());
 
-                const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
-                let siteApp;
-                let loadedFile;
+        for (const dirent of sites) {
+            const domain = dirent.name;
+            const domainPath = path.join(this.wwwPath, domain);
 
-                for (const indexFile of possibleIndexFiles) {
-                    const indexPath = path.join(domainPath, indexFile);
-                    if (fs.existsSync(indexPath)) {
-                        try {
-                            siteApp = await import(indexPath);
-                            siteApp = siteApp.default || siteApp;
-                            loadedFile = indexFile;
-                            break;
-                        } catch (err) {
-                            console.warn(`⚠️  Error loading ${indexPath}:`, err.message);
-                            continue;
-                        }
+            const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
+            let siteApp;
+            let loadedFile;
+
+            for (const indexFile of possibleIndexFiles) {
+                const indexPath = path.join(domainPath, indexFile);
+                if (fs.existsSync(indexPath)) {
+                    try {
+                        // Try dynamic import first
+                        siteApp = await import(indexPath).catch(() => {
+                            // Fallback to require for CommonJS modules
+                            return require(indexPath);
+                        });
+                        // Handle default exports
+                        siteApp = siteApp.default || siteApp;
+                        loadedFile = indexFile;
+                        break;
+                    } catch (err) {
+                        console.warn(`⚠️  Error loading ${indexPath}:`, err);
                     }
                 }
+            }
 
-                if (siteApp) {
-                    const domainEntries = [domain, `www.${domain}`];
-                    this.domains.push(...domainEntries);
-                    domainEntries.forEach(d => {
-                        this.sites[d] = siteApp;
-                    });
+            if (siteApp) {
+                const domainEntries = [domain, `www.${domain}`];
+                this.domains.push(...domainEntries);
+                domainEntries.forEach(d => {
+                    this.sites[d] = siteApp;
+                });
 
-                    console.log(`✅  Loaded site: ${domain} (using ${loadedFile})`);
-                } else {
-                    console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
-                }
-            });
+                console.log(`✅  Loaded site: ${domain} (using ${loadedFile})`);
+            } else {
+                console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
+            }
+        }
     }
 
     generateConfigJson() {
@@ -195,7 +198,8 @@ class Roster {
         console.log(`✅  Manually registered site: ${domain}`);
     }
 
-    start() {
+    async start() {
+        await this.loadSites();
         this.generateConfigJson();
 
         const greenlock = Greenlock.init({
