@@ -20,8 +20,6 @@ class Roster {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
         this.port = port;
-
-        this.loadSites();
     }
 
     async loadSites() {
@@ -31,44 +29,37 @@ class Roster {
             return;
         }
 
-        const dirents = fs.readdirSync(this.wwwPath, { withFileTypes: true })
-            .filter(dirent => dirent.isDirectory());
+        fs.readdirSync(this.wwwPath, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .forEach(async (dirent) => {
+                const domain = dirent.name;
+                const domainPath = path.join(this.wwwPath, domain);
 
-        for (const dirent of dirents) {
-            const domain = dirent.name;
-            const domainPath = path.join(this.wwwPath, domain);
+                const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
+                let siteApp;
+                let loadedFile;
 
-            const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
-            let siteApp;
-            let loadedFile;
-
-            for (const indexFile of possibleIndexFiles) {
-                const indexPath = path.join(domainPath, indexFile);
-                if (fs.existsSync(indexPath)) {
-                    try {
+                for (const indexFile of possibleIndexFiles) {
+                    const indexPath = path.join(domainPath, indexFile);
+                    if (fs.existsSync(indexPath)) {
                         siteApp = await import(indexPath);
-                        // If the module has a default export, use that
-                        siteApp = siteApp.default || siteApp;
                         loadedFile = indexFile;
                         break;
-                    } catch (err) {
-                        console.warn(`⚠️  Error loading ${indexPath}:`, err);
                     }
                 }
-            }
 
-            if (siteApp) {
-                const domainEntries = [domain, `www.${domain}`];
-                this.domains.push(...domainEntries);
-                domainEntries.forEach(d => {
-                    this.sites[d] = siteApp;
-                });
+                if (siteApp) {
+                    const domainEntries = [domain, `www.${domain}`];
+                    this.domains.push(...domainEntries);
+                    domainEntries.forEach(d => {
+                        this.sites[d] = siteApp;
+                    });
 
-                console.log(`✅  Loaded site: ${domain} (using ${loadedFile})`);
-            } else {
-                console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
-            }
-        }
+                    console.log(`✅  Loaded site: ${domain} (using ${loadedFile})`);
+                } else {
+                    console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
+                }
+            });
     }
 
     generateConfigJson() {
