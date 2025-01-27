@@ -20,9 +20,11 @@ class Roster {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
         this.port = port;
+
+        this.loadSites();
     }
 
-    async loadSites() {
+    loadSites() {
         // Check if wwwPath exists
         if (!fs.existsSync(this.wwwPath)) {
             console.warn(`⚠️  WWW path does not exist: ${this.wwwPath}`);
@@ -42,9 +44,15 @@ class Roster {
                 for (const indexFile of possibleIndexFiles) {
                     const indexPath = path.join(domainPath, indexFile);
                     if (fs.existsSync(indexPath)) {
-                        siteApp = await import(indexPath);
-                        loadedFile = indexFile;
-                        break;
+                        try {
+                            siteApp = await import(indexPath);
+                            siteApp = siteApp.default || siteApp;
+                            loadedFile = indexFile;
+                            break;
+                        } catch (err) {
+                            console.warn(`⚠️  Error loading ${indexPath}:`, err.message);
+                            continue;
+                        }
                     }
                 }
 
@@ -187,8 +195,7 @@ class Roster {
         console.log(`✅  Manually registered site: ${domain}`);
     }
 
-    async start() {
-        await this.loadSites();
+    start() {
         this.generateConfigJson();
 
         const greenlock = Greenlock.init({
