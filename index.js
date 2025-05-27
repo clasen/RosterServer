@@ -196,6 +196,7 @@ class Roster {
         });
 
         console.log(`✅  Manually registered site: ${domain}`);
+        return this;
     }
 
     async start() {
