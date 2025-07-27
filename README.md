@@ -121,6 +121,16 @@ roster.register('example.com', (httpsServer) => {
 });
 ```
 
+5. **Manual: Custom port**:
+```javascript:demo/www/manual.js
+roster.register('example.com:8080', (httpsServer) => {
+    return (req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('"Mad with thought, striving to embrace reason, yet the heart holds reasons that reason itself shall never comprehend."');
+    };
+});
+```
+
 ### Running the Server
 
 ```bash

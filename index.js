@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const tls = require('tls');
 const { EventEmitter } = require('events');
 const Greenlock = require('greenlock-express');
 
@@ -80,6 +82,7 @@ class Roster {
         this.domains = [];
         this.sites = {};
         this.domainServers = {}; // Store separate servers for each domain
+        this.portServers = {}; // Store servers by port
         this.hostname = options.hostname || '0.0.0.0';
         this.filename = options.filename || 'index';
 
@@ -87,7 +90,7 @@ class Roster {
         if (port === 80) {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
-        this.port = port;
+        this.defaultPort = port;
     }
 
     async loadSites() {
@@ -106,7 +109,6 @@ class Roster {
 
             const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
             let siteApp;
-            let loadedFile;
 
             for (const indexFile of possibleIndexFiles) {
                 const indexPath = path.join(domainPath, indexFile);
@@ -119,7 +121,6 @@ class Roster {
                         });
                         // Handle default exports
                         siteApp = siteApp.default || siteApp;
-                        loadedFile = indexFile;
                         break;
                     } catch (err) {
                         console.warn(`⚠️  Error loading ${indexPath}:`, err);
@@ -134,7 +135,7 @@ class Roster {
                     this.sites[d] = siteApp;
                 });
 
-                console.log(`✅  Loaded site: ${domain} (using ${loadedFile})`);
+                console.log(`✅  Loaded site: ${domain}`);
             } else {
                 console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
             }
@@ -245,14 +246,16 @@ class Roster {
         }
     }
 
-    register(domain, requestHandler) {
-        if (!domain) {
+    register(domainString, requestHandler) {
+        if (!domainString) {
             throw new Error('Domain is required');
         }
         if (typeof requestHandler !== 'function') {
             throw new Error('requestHandler must be a function');
         }
 
+        const { domain, port } = this.parseDomainWithPort(domainString);
+        
         const domainEntries = [domain];
         if ((domain.match(/\./g) || []).length < 2) {
             domainEntries.push(`www.${domain}`);
@@ -260,15 +263,48 @@ class Roster {
 
         this.domains.push(...domainEntries);
         domainEntries.forEach(d => {
-            this.sites[d] = requestHandler;
+            // Store with port information
+            const domainKey = port === this.defaultPort ? d : `${d}:${port}`;
+            this.sites[domainKey] = requestHandler;
         });
 
-        console.log(`✅  Manually registered site: ${domain}`);
+        console.log(`✅  Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
         return this;
+    }
+
+    parseDomainWithPort(domainString) {
+        const parts = domainString.split(':');
+        if (parts.length === 2) {
+            const domain = parts[0];
+            const port = parseInt(parts[1]);
+            if (port === 80) {
+                throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
+            }
+            return { domain, port };
+        }
+        return { domain: domainString, port: this.defaultPort };
     }
 
     createVirtualServer(domain) {
         return new VirtualServer(domain);
+    }
+
+    // Get SSL context from Greenlock for custom ports
+    async getSSLContext(domain, greenlock) {
+        try {
+            // Try to get existing certificate for the domain
+            const site = await greenlock.get({ servername: domain });
+            if (site && site.pems) {
+                return {
+                    key: site.pems.privkey,
+                    cert: site.pems.cert + site.pems.chain
+                };
+            }
+        } catch (error) {
+        }
+        
+        // Return undefined to let HTTPS server handle SNI callback
+        return null;
     }
 
     async start() {
@@ -285,62 +321,130 @@ class Roster {
 
         return greenlock.ready(glx => {
             const httpServer = glx.httpServer();
-            const virtualServers = {};
-            const appHandlers = {};
             
-            // Create virtual servers and initialize applications
-            for (const [host, siteApp] of Object.entries(this.sites)) {
-                if (!host.startsWith('www.')) {
+            // Group sites by port
+            const sitesByPort = {};
+            for (const [hostKey, siteApp] of Object.entries(this.sites)) {
+                if (!hostKey.startsWith('www.')) {
+                    const { domain, port } = this.parseDomainWithPort(hostKey);
+                    if (!sitesByPort[port]) {
+                        sitesByPort[port] = {
+                            virtualServers: {},
+                            appHandlers: {}
+                        };
+                    }
+                    
                     // Create completely isolated virtual server
-                    const virtualServer = this.createVirtualServer(host);
-                    virtualServers[host] = virtualServer;
-                    this.domainServers[host] = virtualServer;
+                    const virtualServer = this.createVirtualServer(domain);
+                    sitesByPort[port].virtualServers[domain] = virtualServer;
+                    this.domainServers[domain] = virtualServer;
                     
                     // Initialize app with virtual server
                     const appHandler = siteApp(virtualServer);
-                    appHandlers[host] = appHandler;
-                    appHandlers[`www.${host}`] = appHandler;
+                    sitesByPort[port].appHandlers[domain] = appHandler;
+                    sitesByPort[port].appHandlers[`www.${domain}`] = appHandler;
                 }
             }
 
-            // Central dispatcher - the ONLY real listener
-            const centralDispatcher = (req, res) => {
-                const host = req.headers.host || '';
-                
-                // Handle www redirects
-                if (host.startsWith('www.')) {
-                    const newHost = host.slice(4);
-                    res.writeHead(301, { Location: `https://${newHost}${req.url}` });
-                    res.end();
-                    return;
-                }
+            // Create dispatcher for each port
+            const createDispatcher = (portData) => {
+                return (req, res) => {
+                    const host = req.headers.host || '';
+                    
+                    // Remove port from host header if present (e.g., "domain.com:8080" -> "domain.com")
+                    const hostWithoutPort = host.split(':')[0];
+                    const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
+                    
+                    // Handle www redirects
+                    if (hostWithoutPort.startsWith('www.')) {
+                        res.writeHead(301, { Location: `https://${domain}${req.url}` });
+                        res.end();
+                        return;
+                    }
 
-                const virtualServer = virtualServers[host];
-                const appHandler = appHandlers[host];
-                
-                if (virtualServer && virtualServer.requestListeners.length > 0) {
-                    // App registered listeners on virtual server - use them
-                    virtualServer.processRequest(req, res);
-                } else if (appHandler) {
-                    // App returned a handler function - use it
-                    appHandler(req, res);
-                } else {
-                    res.writeHead(404);
-                    res.end('Site not found');
-                }
+                    const virtualServer = portData.virtualServers[domain];
+                    const appHandler = portData.appHandlers[domain];
+                    
+                    if (virtualServer && virtualServer.requestListeners.length > 0) {
+                        // App registered listeners on virtual server - use them
+                        virtualServer.processRequest(req, res);
+                    } else if (appHandler) {
+                        // App returned a handler function - use it
+                        appHandler(req, res);
+                    } else {
+                        res.writeHead(404);
+                        res.end('Site not found');
+                    }
+                };
             };
 
-            // Single HTTPS server with central dispatcher
-            const mainHttpsServer = glx.httpsServer(null, centralDispatcher);
-
-            // Start servers
             httpServer.listen(80, this.hostname, () => {
-                console.log('ℹ️  HTTP server listening on port 80');
+                console.log('HTTP server listening on port 80');
             });
 
-            mainHttpsServer.listen(this.port, this.hostname, () => {
-                console.log('ℹ️  HTTPS server listening on port ' + this.port);
-            });
+            // Handle different port types
+            for (const [port, portData] of Object.entries(sitesByPort)) {
+                const portNum = parseInt(port);
+                const dispatcher = createDispatcher(portData);
+                
+                if (portNum === this.defaultPort) {
+                    // Use Greenlock for default port (443) with SSL
+                    const httpsServer = glx.httpsServer(null, dispatcher);
+                    this.portServers[portNum] = httpsServer;
+                    
+                    httpsServer.listen(portNum, this.hostname, () => {
+                        console.log(`HTTPS server listening on port ${portNum}`);
+                    });
+                } else {
+                    // Create HTTPS server for custom ports using Greenlock certificates
+                    const httpsOptions = {
+                        // SNI callback to get certificates dynamically
+                        SNICallback: (domain, callback) => {
+                            try {
+                                const certPath = path.join(this.greenlockStorePath, 'live', domain);
+                                const keyPath = path.join(certPath, 'privkey.pem');
+                                const certFilePath = path.join(certPath, 'cert.pem');
+                                const chainPath = path.join(certPath, 'chain.pem');
+                                
+                                if (fs.existsSync(keyPath) && fs.existsSync(certFilePath) && fs.existsSync(chainPath)) {
+                                    const key = fs.readFileSync(keyPath, 'utf8');
+                                    const cert = fs.readFileSync(certFilePath, 'utf8');
+                                    const chain = fs.readFileSync(chainPath, 'utf8');
+                                    
+                                    callback(null, tls.createSecureContext({
+                                        key: key,
+                                        cert: cert + chain
+                                    }));
+                                } else {
+                                    callback(new Error(`No certificate files available for ${domain}`));
+                                }
+                            } catch (error) {
+                                callback(error);
+                            }
+                        }
+                    };
+                    
+                    const httpsServer = https.createServer(httpsOptions, dispatcher);
+                    
+                    httpsServer.on('error', (error) => {
+                        console.error(`HTTPS server error on port ${portNum}:`, error.message);
+                    });
+                    
+                    httpsServer.on('tlsClientError', (error) => {
+                        console.error(`TLS error on port ${portNum}:`, error.message);
+                    });
+                    
+                    this.portServers[portNum] = httpsServer;
+                    
+                    httpsServer.listen(portNum, this.hostname, (error) => {
+                        if (error) {
+                            console.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);
+                        } else {
+                            console.log(`HTTPS server listening on port ${portNum}`);
+                        }
+                    });
+                }
+            }
         });
     }
 }
