@@ -1,6 +1,73 @@
 const fs = require('fs');
 const path = require('path');
+const { EventEmitter } = require('events');
 const Greenlock = require('greenlock-express');
+
+// Virtual Server that completely isolates applications
+class VirtualServer extends EventEmitter {
+    constructor(domain) {
+        super();
+        this.domain = domain;
+        this.requestListeners = [];
+        
+        // Simulate http.Server properties
+        this.listening = false;
+        this.address = () => ({ port: 443, family: 'IPv4', address: '0.0.0.0' });
+        this.timeout = 0;
+        this.keepAliveTimeout = 5000;
+        this.headersTimeout = 60000;
+        this.maxHeadersCount = null;
+    }
+    
+    // Override listener methods to capture them
+    on(event, listener) {
+        if (event === 'request') {
+            this.requestListeners.push(listener);
+        }
+        return super.on(event, listener);
+    }
+    
+    addListener(event, listener) {
+        return this.on(event, listener);
+    }
+    
+    // Socket.IO compatibility methods
+    listeners(event) {
+        if (event === 'request') {
+            return this.requestListeners.slice();
+        }
+        return super.listeners(event);
+    }
+    
+    removeListener(event, listener) {
+        if (event === 'request') {
+            const index = this.requestListeners.indexOf(listener);
+            if (index !== -1) {
+                this.requestListeners.splice(index, 1);
+            }
+        }
+        return super.removeListener(event, listener);
+    }
+    
+    removeAllListeners(event) {
+        if (event === 'request') {
+            this.requestListeners = [];
+        }
+        return super.removeAllListeners(event);
+    }
+    
+    // Simulate other http.Server methods
+    listen() { this.listening = true; return this; }
+    close() { this.listening = false; return this; }
+    setTimeout() { return this; }
+    
+    // Process request with this virtual server's listeners
+    processRequest(req, res) {
+        for (const listener of this.requestListeners) {
+            listener(req, res);
+        }
+    }
+}
 
 class Roster {
     constructor(options = {}) {
@@ -12,6 +79,7 @@ class Roster {
         this.cluster = options.cluster || false;
         this.domains = [];
         this.sites = {};
+        this.domainServers = {}; // Store separate servers for each domain
         this.hostname = options.hostname || '0.0.0.0';
         this.filename = options.filename || 'index';
 
@@ -199,6 +267,10 @@ class Roster {
         return this;
     }
 
+    createVirtualServer(domain) {
+        return new VirtualServer(domain);
+    }
+
     async start() {
         await this.loadSites();
         this.generateConfigJson();
@@ -211,29 +283,62 @@ class Roster {
             staging: this.staging
         });
 
-        const app = (req, res) => {
-            this.handleRequest(req, res);
-        };
-
         return greenlock.ready(glx => {
-            // Obtener los servidores sin iniciarlos
-            const httpsServer = glx.httpsServer(null, app);
             const httpServer = glx.httpServer();
-
+            const virtualServers = {};
+            const appHandlers = {};
+            
+            // Create virtual servers and initialize applications
             for (const [host, siteApp] of Object.entries(this.sites)) {
                 if (!host.startsWith('www.')) {
-                    const appInstance = siteApp(httpsServer);
-                    this.sites[host] = appInstance;
-                    this.sites[`www.${host}`] = appInstance;
-                    console.log(`🔧 Initialized server for ${host}`);
+                    // Create completely isolated virtual server
+                    const virtualServer = this.createVirtualServer(host);
+                    virtualServers[host] = virtualServer;
+                    this.domainServers[host] = virtualServer;
+                    
+                    // Initialize app with virtual server
+                    const appHandler = siteApp(virtualServer);
+                    appHandlers[host] = appHandler;
+                    appHandlers[`www.${host}`] = appHandler;
                 }
             }
 
+            // Central dispatcher - the ONLY real listener
+            const centralDispatcher = (req, res) => {
+                const host = req.headers.host || '';
+                
+                // Handle www redirects
+                if (host.startsWith('www.')) {
+                    const newHost = host.slice(4);
+                    res.writeHead(301, { Location: `https://${newHost}${req.url}` });
+                    res.end();
+                    return;
+                }
+
+                const virtualServer = virtualServers[host];
+                const appHandler = appHandlers[host];
+                
+                if (virtualServer && virtualServer.requestListeners.length > 0) {
+                    // App registered listeners on virtual server - use them
+                    virtualServer.processRequest(req, res);
+                } else if (appHandler) {
+                    // App returned a handler function - use it
+                    appHandler(req, res);
+                } else {
+                    res.writeHead(404);
+                    res.end('Site not found');
+                }
+            };
+
+            // Single HTTPS server with central dispatcher
+            const mainHttpsServer = glx.httpsServer(null, centralDispatcher);
+
+            // Start servers
             httpServer.listen(80, this.hostname, () => {
                 console.log('ℹ️  HTTP server listening on port 80');
             });
 
-            httpsServer.listen(this.port, this.hostname, () => {
+            mainHttpsServer.listen(this.port, this.hostname, () => {
                 console.log('ℹ️  HTTPS server listening on port ' + this.port);
             });
         });
