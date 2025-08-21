@@ -5,6 +5,7 @@ const https = require('https');
 const tls = require('tls');
 const { EventEmitter } = require('events');
 const Greenlock = require('greenlock-express');
+const log = require('lemonlog')('roster');
 
 // Virtual Server that completely isolates applications
 class VirtualServer extends EventEmitter {
@@ -98,7 +99,7 @@ class Roster {
     async loadSites() {
         // Check if wwwPath exists
         if (!fs.existsSync(this.wwwPath)) {
-            console.warn(`⚠️  WWW path does not exist: ${this.wwwPath}`);
+            log.warn(`⚠️  WWW path does not exist: ${this.wwwPath}`);
             return;
         }
 
@@ -125,7 +126,7 @@ class Roster {
                         siteApp = siteApp.default || siteApp;
                         break;
                     } catch (err) {
-                        console.warn(`⚠️  Error loading ${indexPath}:`, err);
+                        log.warn(`⚠️  Error loading ${indexPath}:`, err);
                     }
                 }
             }
@@ -137,9 +138,9 @@ class Roster {
                     this.sites[d] = siteApp;
                 });
 
-                console.log(`✅  Loaded site: ${domain}`);
+                log.info(`✅  Loaded site: ${domain}`);
             } else {
-                console.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
+                log.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
             }
         }
     }
@@ -217,16 +218,16 @@ class Roster {
             const currentConfigContentFormatted = JSON.stringify(currentConfig, null, 2);
 
             if (newConfigContent === currentConfigContentFormatted) {
-                console.log('ℹ️  Configuration has not changed. config.json will not be overwritten.');
+                log.info('ℹ️  Configuration has not changed. config.json will not be overwritten.');
                 return;
             }
-            console.log('🔄  Configuration has changed. config.json will be updated.');
+            log.info('🔄  Configuration has changed. config.json will be updated.');
         } else {
-            console.log('🆕  config.json does not exist. A new one will be created.');
+            log.info('🆕  config.json does not exist. A new one will be created.');
         }
 
         fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
-        console.log(`📁  config.json generated at ${configPath}`);
+        log.info(`📁  config.json generated at ${configPath}`);
     }
 
     handleRequest(req, res) {
@@ -270,7 +271,7 @@ class Roster {
             this.sites[domainKey] = requestHandler;
         });
 
-        console.log(`✅  Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
+        log.info(`✅  Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
         return this;
     }
 
@@ -349,17 +350,17 @@ class Roster {
             this.portServers[port] = httpServer;
             
             httpServer.listen(port, 'localhost', () => {
-                console.log(`🌐 ${domain} → http://localhost:${port}`);
+                log.info(`🌐 ${domain} → http://localhost:${port}`);
             });
             
             httpServer.on('error', (error) => {
-                console.error(`❌ Error on port ${port} for ${domain}:`, error.message);
+                log.error(`❌ Error on port ${port} for ${domain}:`, error.message);
             });
             
             currentPort++;
         }
         
-        console.log(`✅ Started ${currentPort - startPort} sites in local mode`);
+        log.info(`✅ Started ${currentPort - startPort} sites in local mode`);
         return Promise.resolve();
     }
 
@@ -444,7 +445,7 @@ class Roster {
             };
 
             httpServer.listen(80, this.hostname, () => {
-                console.log('HTTP server listening on port 80');
+                log.info('HTTP server listening on port 80');
             });
 
             // Handle different port types
@@ -458,7 +459,7 @@ class Roster {
                     this.portServers[portNum] = httpsServer;
                     
                     httpsServer.listen(portNum, this.hostname, () => {
-                        console.log(`HTTPS server listening on port ${portNum}`);
+                        log.info(`HTTPS server listening on port ${portNum}`);
                     });
                 } else {
                     // Create HTTPS server for custom ports using Greenlock certificates
@@ -492,13 +493,13 @@ class Roster {
                     const httpsServer = https.createServer(httpsOptions, dispatcher);
                     
                     httpsServer.on('error', (error) => {
-                        console.error(`HTTPS server error on port ${portNum}:`, error.message);
+                        log.error(`HTTPS server error on port ${portNum}:`, error.message);
                     });
                     
                     httpsServer.on('tlsClientError', (error) => {
                         // Suppress HTTP request errors to avoid log spam
                         if (!error.message.includes('http request')) {
-                            console.error(`TLS error on port ${portNum}:`, error.message);
+                            log.error(`TLS error on port ${portNum}:`, error.message);
                         }
                     });
                     
@@ -506,9 +507,9 @@ class Roster {
                     
                     httpsServer.listen(portNum, this.hostname, (error) => {
                         if (error) {
-                            console.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);
+                            log.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);
                         } else {
-                            console.log(`HTTPS server listening on port ${portNum}`);
+                            log.info(`HTTPS server listening on port ${portNum}`);
                         }
                     });
                 }
