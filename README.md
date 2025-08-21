@@ -162,6 +162,31 @@ When creating a new `RosterServer` instance, you can pass the following options:
 - `wwwPath` (string): Path to your `www` directory containing your sites.
 - `greenlockStorePath` (string): Directory for Greenlock configuration.
 - `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).
+- `local` (boolean): Set to `true` to run in local development mode.
+
+## 🏠 Local Development Mode
+
+For local development and testing, you can run RosterServer in local mode by setting `local: true`. This mode is perfect for development environments where you don't need SSL certificates or production features.
+
+When `{ local: true }` is enabled, RosterServer **Skips SSL/HTTPS**: Runs pure HTTP servers instead of HTTPS.
+
+### Setting Up Local Mode
+
+```javascript
+const server = new Roster({
+    wwwPath: '/srv/www',
+    local: true  // Enable local development mode
+});
+server.start();
+```
+
+### Port Assignment
+
+In local mode, domains are automatically assigned ports starting from 3000:
+
+- `example.com` → `http://localhost:3000`
+- `api.example.com` → `http://localhost:3001`  
+- And so on...
 
 ## 🧂 A Touch of Magic
 

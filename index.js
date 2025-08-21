@@ -81,7 +81,7 @@ class Roster {
         this.greenlockStorePath = options.greenlockStorePath || path.join(basePath, 'greenlock.d');
         this.staging = options.staging || false;
         this.cluster = options.cluster || false;
-        this.local = options.local || false; // New local mode option
+        this.local = options.local || false;
         this.domains = [];
         this.sites = {};
         this.domainServers = {}; // Store separate servers for each domain
@@ -138,7 +138,7 @@ class Roster {
                     this.sites[d] = siteApp;
                 });
 
-                log.info(`✅  Loaded site: ${domain}`);
+                log.info(`(✔) Loaded site: ${domain}`);
             } else {
                 log.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
             }
@@ -271,7 +271,7 @@ class Roster {
             this.sites[domainKey] = requestHandler;
         });
 
-        log.info(`✅  Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
+        log.info(`(✔) Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
         return this;
     }
 
@@ -360,7 +360,7 @@ class Roster {
             currentPort++;
         }
         
-        log.info(`✅ Started ${currentPort - startPort} sites in local mode`);
+        log.info(`(✔) Started ${currentPort - startPort} sites in local mode`);
         return Promise.resolve();
     }
 
