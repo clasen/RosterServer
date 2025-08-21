@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const https = require('https');
 const tls = require('tls');
 const { EventEmitter } = require('events');
@@ -79,6 +80,7 @@ class Roster {
         this.greenlockStorePath = options.greenlockStorePath || path.join(basePath, 'greenlock.d');
         this.staging = options.staging || false;
         this.cluster = options.cluster || false;
+        this.local = options.local || false; // New local mode option
         this.domains = [];
         this.sites = {};
         this.domainServers = {}; // Store separate servers for each domain
@@ -87,7 +89,7 @@ class Roster {
         this.filename = options.filename || 'index';
 
         const port = options.port === undefined ? 443 : options.port;
-        if (port === 80) {
+        if (port === 80 && !this.local) {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
         this.defaultPort = port;
@@ -277,7 +279,7 @@ class Roster {
         if (parts.length === 2) {
             const domain = parts[0];
             const port = parseInt(parts[1]);
-            if (port === 80) {
+            if (port === 80 && !this.local) {
                 throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
             }
             return { domain, port };
@@ -307,9 +309,72 @@ class Roster {
         return null;
     }
 
+    // Start server in local mode with HTTP - simplified version
+    startLocalMode() {
+        const startPort = 3000;
+        let currentPort = startPort;
+        
+        // Create a simple HTTP server for each domain with sequential ports
+        for (const [hostKey, siteApp] of Object.entries(this.sites)) {
+            const domain = hostKey.split(':')[0]; // Remove port if present
+            
+            // Skip www domains in local mode
+            if (domain.startsWith('www.')) {
+                continue;
+            }
+            
+            const port = currentPort; // Capture current port value
+            
+            // Create virtual server for the domain
+            const virtualServer = this.createVirtualServer(domain);
+            this.domainServers[domain] = virtualServer;
+            
+            // Initialize app with virtual server
+            const appHandler = siteApp(virtualServer);
+            
+            // Create simple dispatcher for this domain
+            const dispatcher = (req, res) => {
+                if (virtualServer.requestListeners.length > 0) {
+                    virtualServer.processRequest(req, res);
+                } else if (appHandler) {
+                    appHandler(req, res);
+                } else {
+                    res.writeHead(404);
+                    res.end('Site not found');
+                }
+            };
+            
+            // Create HTTP server for this domain
+            const httpServer = http.createServer(dispatcher);
+            this.portServers[port] = httpServer;
+            
+            httpServer.listen(port, 'localhost', () => {
+                console.log(`🌐 ${domain} → http://localhost:${port}`);
+            });
+            
+            httpServer.on('error', (error) => {
+                console.error(`❌ Error on port ${port} for ${domain}:`, error.message);
+            });
+            
+            currentPort++;
+        }
+        
+        console.log(`✅ Started ${currentPort - startPort} sites in local mode`);
+        return Promise.resolve();
+    }
+
     async start() {
         await this.loadSites();
-        this.generateConfigJson();
+        
+        // Skip Greenlock configuration generation in local mode
+        if (!this.local) {
+            this.generateConfigJson();
+        }
+
+        // Handle local mode with simple HTTP server
+        if (this.local) {
+            return this.startLocalMode();
+        }
 
         const greenlock = Greenlock.init({
             packageRoot: __dirname,
@@ -431,7 +496,10 @@ class Roster {
                     });
                     
                     httpsServer.on('tlsClientError', (error) => {
-                        console.error(`TLS error on port ${portNum}:`, error.message);
+                        // Suppress HTTP request errors to avoid log spam
+                        if (!error.message.includes('http request')) {
+                            console.error(`TLS error on port ${portNum}:`, error.message);
+                        }
                     });
                     
                     this.portServers[portNum] = httpsServer;
