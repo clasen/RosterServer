@@ -138,7 +138,7 @@ class Roster {
                     this.sites[d] = siteApp;
                 });
 
-                log.info(`(✔) Loaded site: ${domain}`);
+                log.info(`(✔) Loaded site: https://${domain}`);
             } else {
                 log.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
             }
