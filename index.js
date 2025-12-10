@@ -67,8 +67,31 @@ class VirtualServer extends EventEmitter {
     
     // Process request with this virtual server's listeners
     processRequest(req, res) {
+        let handled = false;
+        
+        // Track if response was handled
+        const originalEnd = res.end;
+        res.end = function(...args) {
+            handled = true;
+            return originalEnd.apply(this, args);
+        };
+        
+        // Try all listeners
         for (const listener of this.requestListeners) {
-            listener(req, res);
+            if (!handled) {
+                listener(req, res);
+            }
+        }
+        
+        // Restore original end method
+        res.end = originalEnd;
+        
+        // If no listener handled the request, try fallback handler
+        if (!handled && this.fallbackHandler) {
+            this.fallbackHandler(req, res);
+        } else if (!handled) {
+            res.writeHead(404);
+            res.end('No handler found');
         }
     }
 }
@@ -335,6 +358,9 @@ class Roster {
             
             // Create simple dispatcher for this domain
             const dispatcher = (req, res) => {
+                // Set fallback handler on virtual server for non-Socket.IO requests
+                virtualServer.fallbackHandler = appHandler;
+                
                 if (virtualServer.requestListeners.length > 0) {
                     virtualServer.processRequest(req, res);
                 } else if (appHandler) {
@@ -432,6 +458,8 @@ class Roster {
                     const appHandler = portData.appHandlers[domain];
                     
                     if (virtualServer && virtualServer.requestListeners.length > 0) {
+                        // Set fallback handler on virtual server for non-Socket.IO requests
+                        virtualServer.fallbackHandler = appHandler;
                         // App registered listeners on virtual server - use them
                         virtualServer.processRequest(req, res);
                     } else if (appHandler) {
