@@ -18,6 +18,7 @@ const app = (httpsServer) => {
 
     // Devolvemos el handler para las peticiones HTTP
     return (req, res) => {
+        if (req.url && req.url.startsWith(io.opts.path)) return;
         res.writeHead(200);
         res.end('Socket.IO server running');
     };

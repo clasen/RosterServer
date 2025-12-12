@@ -32,7 +32,9 @@ Your project should look something like this:
     ├── example.com/
     │   └── index.js
     └── subdomain.example.com/
-        └── index.js
+    │   └── index.js
+    └── other-domain.com/
+        └── index.js        
 ```
 
 ### Setting Up Your Server
@@ -105,6 +107,7 @@ module.exports = (httpsServer) => {
     });
 
     return (req, res) => {
+        if (req.url && req.url.startsWith(io.opts.path)) return;
         res.writeHead(200);
         res.end('Socket.IO server running');
     };

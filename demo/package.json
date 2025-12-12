@@ -10,6 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
+    "express": "^5.2.1",
+    "shotx": "^1.4.2",
     "socket.io": "^4.8.1"
   }
 }

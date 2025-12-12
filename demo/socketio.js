@@ -20,6 +20,7 @@ roster.register('example.com', (httpsServer) => {
     });
 
     return (req, res) => {
+        if (req.url && req.url.startsWith(io.opts.path)) return;
         res.writeHead(404);
         res.end('Not found');
     };
