@@ -13,6 +13,7 @@ class VirtualServer extends EventEmitter {
         super();
         this.domain = domain;
         this.requestListeners = [];
+        this.upgradeListeners = [];
         
         // Simulate http.Server properties
         this.listening = false;
@@ -27,6 +28,8 @@ class VirtualServer extends EventEmitter {
     on(event, listener) {
         if (event === 'request') {
             this.requestListeners.push(listener);
+        } else if (event === 'upgrade') {
+            this.upgradeListeners.push(listener);
         }
         return super.on(event, listener);
     }
@@ -39,6 +42,8 @@ class VirtualServer extends EventEmitter {
     listeners(event) {
         if (event === 'request') {
             return this.requestListeners.slice();
+        } else if (event === 'upgrade') {
+            return this.upgradeListeners.slice();
         }
         return super.listeners(event);
     }
@@ -49,6 +54,11 @@ class VirtualServer extends EventEmitter {
             if (index !== -1) {
                 this.requestListeners.splice(index, 1);
             }
+        } else if (event === 'upgrade') {
+            const index = this.upgradeListeners.indexOf(listener);
+            if (index !== -1) {
+                this.upgradeListeners.splice(index, 1);
+            }
         }
         return super.removeListener(event, listener);
     }
@@ -56,6 +66,8 @@ class VirtualServer extends EventEmitter {
     removeAllListeners(event) {
         if (event === 'request') {
             this.requestListeners = [];
+        } else if (event === 'upgrade') {
+            this.upgradeListeners = [];
         }
         return super.removeAllListeners(event);
     }
@@ -92,6 +104,19 @@ class VirtualServer extends EventEmitter {
         } else if (!handled) {
             res.writeHead(404);
             res.end('No handler found');
+        }
+    }
+    
+    // Process upgrade events (WebSocket)
+    processUpgrade(req, socket, head) {
+        // Emit to all registered upgrade listeners
+        for (const listener of this.upgradeListeners) {
+            listener(req, socket, head);
+        }
+        
+        // If no listeners, destroy the socket
+        if (this.upgradeListeners.length === 0) {
+            socket.destroy();
         }
     }
 }
@@ -375,6 +400,11 @@ class Roster {
             const httpServer = http.createServer(dispatcher);
             this.portServers[port] = httpServer;
             
+            // Handle WebSocket upgrade events
+            httpServer.on('upgrade', (req, socket, head) => {
+                virtualServer.processUpgrade(req, socket, head);
+            });
+            
             httpServer.listen(port, 'localhost', () => {
                 log.info(`🌐 ${domain} → http://localhost:${port}`);
             });
@@ -476,15 +506,37 @@ class Roster {
                 log.info('HTTP server listening on port 80');
             });
 
+            // Create upgrade handler for WebSocket connections
+            const createUpgradeHandler = (portData) => {
+                return (req, socket, head) => {
+                    const host = req.headers.host || '';
+                    const hostWithoutPort = host.split(':')[0];
+                    const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
+                    
+                    const virtualServer = portData.virtualServers[domain];
+                    
+                    if (virtualServer) {
+                        virtualServer.processUpgrade(req, socket, head);
+                    } else {
+                        // No virtual server found, destroy the socket
+                        socket.destroy();
+                    }
+                };
+            };
+
             // Handle different port types
             for (const [port, portData] of Object.entries(sitesByPort)) {
                 const portNum = parseInt(port);
                 const dispatcher = createDispatcher(portData);
+                const upgradeHandler = createUpgradeHandler(portData);
                 
                 if (portNum === this.defaultPort) {
                     // Use Greenlock for default port (443) with SSL
                     const httpsServer = glx.httpsServer(null, dispatcher);
                     this.portServers[portNum] = httpsServer;
+                    
+                    // Handle WebSocket upgrade events
+                    httpsServer.on('upgrade', upgradeHandler);
                     
                     httpsServer.listen(portNum, this.hostname, () => {
                         log.info(`HTTPS server listening on port ${portNum}`);
@@ -519,6 +571,9 @@ class Roster {
                     };
                     
                     const httpsServer = https.createServer(httpsOptions, dispatcher);
+                    
+                    // Handle WebSocket upgrade events
+                    httpsServer.on('upgrade', upgradeHandler);
                     
                     httpsServer.on('error', (error) => {
                         log.error(`HTTPS server error on port ${portNum}:`, error.message);
