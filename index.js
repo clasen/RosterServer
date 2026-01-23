@@ -7,6 +7,32 @@ const { EventEmitter } = require('events');
 const Greenlock = require('greenlock-express');
 const log = require('lemonlog')('roster');
 
+// CRC32 implementation for deterministic port assignment
+function crc32(str) {
+    const crcTable = [];
+    for (let i = 0; i < 256; i++) {
+        let crc = i;
+        for (let j = 0; j < 8; j++) {
+            crc = (crc & 1) ? (0xEDB88320 ^ (crc >>> 1)) : (crc >>> 1);
+        }
+        crcTable[i] = crc;
+    }
+
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < str.length; i++) {
+        const byte = str.charCodeAt(i);
+        crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 0xFF];
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+// Convert CRC32 hash to a port number in available range
+function domainToPort(domain, minPort = 3000, maxPort = 65535) {
+    const hash = crc32(domain);
+    const portRange = maxPort - minPort + 1;
+    return minPort + (hash % portRange);
+}
+
 // Virtual Server that completely isolates applications
 class VirtualServer extends EventEmitter {
     constructor(domain) {
@@ -14,7 +40,7 @@ class VirtualServer extends EventEmitter {
         this.domain = domain;
         this.requestListeners = [];
         this.upgradeListeners = [];
-        
+
         // Simulate http.Server properties
         this.listening = false;
         this.address = () => ({ port: 443, family: 'IPv4', address: '0.0.0.0' });
@@ -23,7 +49,7 @@ class VirtualServer extends EventEmitter {
         this.headersTimeout = 60000;
         this.maxHeadersCount = null;
     }
-    
+
     // Override listener methods to capture them
     on(event, listener) {
         if (event === 'request') {
@@ -33,11 +59,11 @@ class VirtualServer extends EventEmitter {
         }
         return super.on(event, listener);
     }
-    
+
     addListener(event, listener) {
         return this.on(event, listener);
     }
-    
+
     // Socket.IO compatibility methods
     listeners(event) {
         if (event === 'request') {
@@ -47,7 +73,7 @@ class VirtualServer extends EventEmitter {
         }
         return super.listeners(event);
     }
-    
+
     removeListener(event, listener) {
         if (event === 'request') {
             const index = this.requestListeners.indexOf(listener);
@@ -62,7 +88,7 @@ class VirtualServer extends EventEmitter {
         }
         return super.removeListener(event, listener);
     }
-    
+
     removeAllListeners(event) {
         if (event === 'request') {
             this.requestListeners = [];
@@ -71,33 +97,33 @@ class VirtualServer extends EventEmitter {
         }
         return super.removeAllListeners(event);
     }
-    
+
     // Simulate other http.Server methods
     listen() { this.listening = true; return this; }
     close() { this.listening = false; return this; }
     setTimeout() { return this; }
-    
+
     // Process request with this virtual server's listeners
     processRequest(req, res) {
         let handled = false;
-        
+
         // Track if response was handled
         const originalEnd = res.end;
-        res.end = function(...args) {
+        res.end = function (...args) {
             handled = true;
             return originalEnd.apply(this, args);
         };
-        
+
         // Try all listeners
         for (const listener of this.requestListeners) {
             if (!handled) {
                 listener(req, res);
             }
         }
-        
+
         // Restore original end method
         res.end = originalEnd;
-        
+
         // If no listener handled the request, try fallback handler
         if (!handled && this.fallbackHandler) {
             this.fallbackHandler(req, res);
@@ -106,14 +132,14 @@ class VirtualServer extends EventEmitter {
             res.end('No handler found');
         }
     }
-    
+
     // Process upgrade events (WebSocket)
     processUpgrade(req, socket, head) {
         // Emit to all registered upgrade listeners
         for (const listener of this.upgradeListeners) {
             listener(req, socket, head);
         }
-        
+
         // If no listeners, destroy the socket
         if (this.upgradeListeners.length === 0) {
             socket.destroy();
@@ -134,6 +160,7 @@ class Roster {
         this.sites = {};
         this.domainServers = {}; // Store separate servers for each domain
         this.portServers = {}; // Store servers by port
+        this.assignedPorts = new Set(); // Track ports assigned to domains (not OS availability)
         this.hostname = options.hostname || '0.0.0.0';
         this.filename = options.filename || 'index';
 
@@ -306,7 +333,7 @@ class Roster {
         }
 
         const { domain, port } = this.parseDomainWithPort(domainString);
-        
+
         const domainEntries = [domain];
         if ((domain.match(/\./g) || []).length < 2) {
             domainEntries.push(`www.${domain}`);
@@ -340,6 +367,22 @@ class Roster {
         return new VirtualServer(domain);
     }
 
+    // Assign port to domain, detecting collisions with already assigned ports
+    assignPortToDomain(domain, minPort = 4000, maxPort = 9999) {
+        let port = domainToPort(domain, minPort, maxPort);
+
+        // If port is already assigned to another domain, increment until we find a free one
+        while (this.assignedPorts.has(port)) {
+            port++;
+            if (port > maxPort) {
+                port = minPort; // Wrap around if we exceed max port
+            }
+        }
+
+        this.assignedPorts.add(port);
+        return port;
+    }
+
     // Get SSL context from Greenlock for custom ports
     async getSSLContext(domain, greenlock) {
         try {
@@ -353,39 +396,37 @@ class Roster {
             }
         } catch (error) {
         }
-        
+
         // Return undefined to let HTTPS server handle SNI callback
         return null;
     }
 
     // Start server in local mode with HTTP - simplified version
     startLocalMode() {
-        const startPort = 3000;
-        let currentPort = startPort;
-        
-        // Create a simple HTTP server for each domain with sequential ports
+        // Create a simple HTTP server for each domain with CRC32-based ports
         for (const [hostKey, siteApp] of Object.entries(this.sites)) {
             const domain = hostKey.split(':')[0]; // Remove port if present
-            
+
             // Skip www domains in local mode
             if (domain.startsWith('www.')) {
                 continue;
             }
-            
-            const port = currentPort; // Capture current port value
-            
+
+            // Calculate deterministic port based on domain CRC32, with collision detection
+            const port = this.assignPortToDomain(domain, 4000, 9999);
+
             // Create virtual server for the domain
             const virtualServer = this.createVirtualServer(domain);
             this.domainServers[domain] = virtualServer;
-            
+
             // Initialize app with virtual server
             const appHandler = siteApp(virtualServer);
-            
+
             // Create simple dispatcher for this domain
             const dispatcher = (req, res) => {
                 // Set fallback handler on virtual server for non-Socket.IO requests
                 virtualServer.fallbackHandler = appHandler;
-                
+
                 if (virtualServer.requestListeners.length > 0) {
                     virtualServer.processRequest(req, res);
                 } else if (appHandler) {
@@ -395,34 +436,32 @@ class Roster {
                     res.end('Site not found');
                 }
             };
-            
+
             // Create HTTP server for this domain
             const httpServer = http.createServer(dispatcher);
             this.portServers[port] = httpServer;
-            
+
             // Handle WebSocket upgrade events
             httpServer.on('upgrade', (req, socket, head) => {
                 virtualServer.processUpgrade(req, socket, head);
             });
-            
+
             httpServer.listen(port, 'localhost', () => {
                 log.info(`🌐 ${domain} → http://localhost:${port}`);
             });
-            
+
             httpServer.on('error', (error) => {
                 log.error(`❌ Error on port ${port} for ${domain}:`, error.message);
             });
-            
-            currentPort++;
         }
-        
-        log.info(`(✔) Started ${currentPort - startPort} sites in local mode`);
+
+        log.info(`(✔) Started ${Object.keys(this.portServers).length} sites in local mode`);
         return Promise.resolve();
     }
 
     async start() {
         await this.loadSites();
-        
+
         // Skip Greenlock configuration generation in local mode
         if (!this.local) {
             this.generateConfigJson();
@@ -443,7 +482,7 @@ class Roster {
 
         return greenlock.ready(glx => {
             const httpServer = glx.httpServer();
-            
+
             // Group sites by port
             const sitesByPort = {};
             for (const [hostKey, siteApp] of Object.entries(this.sites)) {
@@ -455,12 +494,12 @@ class Roster {
                             appHandlers: {}
                         };
                     }
-                    
+
                     // Create completely isolated virtual server
                     const virtualServer = this.createVirtualServer(domain);
                     sitesByPort[port].virtualServers[domain] = virtualServer;
                     this.domainServers[domain] = virtualServer;
-                    
+
                     // Initialize app with virtual server
                     const appHandler = siteApp(virtualServer);
                     sitesByPort[port].appHandlers[domain] = appHandler;
@@ -472,11 +511,11 @@ class Roster {
             const createDispatcher = (portData) => {
                 return (req, res) => {
                     const host = req.headers.host || '';
-                    
+
                     // Remove port from host header if present (e.g., "domain.com:8080" -> "domain.com")
                     const hostWithoutPort = host.split(':')[0];
                     const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
-                    
+
                     // Handle www redirects
                     if (hostWithoutPort.startsWith('www.')) {
                         res.writeHead(301, { Location: `https://${domain}${req.url}` });
@@ -486,7 +525,7 @@ class Roster {
 
                     const virtualServer = portData.virtualServers[domain];
                     const appHandler = portData.appHandlers[domain];
-                    
+
                     if (virtualServer && virtualServer.requestListeners.length > 0) {
                         // Set fallback handler on virtual server for non-Socket.IO requests
                         virtualServer.fallbackHandler = appHandler;
@@ -512,9 +551,9 @@ class Roster {
                     const host = req.headers.host || '';
                     const hostWithoutPort = host.split(':')[0];
                     const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
-                    
+
                     const virtualServer = portData.virtualServers[domain];
-                    
+
                     if (virtualServer) {
                         virtualServer.processUpgrade(req, socket, head);
                     } else {
@@ -529,15 +568,15 @@ class Roster {
                 const portNum = parseInt(port);
                 const dispatcher = createDispatcher(portData);
                 const upgradeHandler = createUpgradeHandler(portData);
-                
+
                 if (portNum === this.defaultPort) {
                     // Use Greenlock for default port (443) with SSL
                     const httpsServer = glx.httpsServer(null, dispatcher);
                     this.portServers[portNum] = httpsServer;
-                    
+
                     // Handle WebSocket upgrade events
                     httpsServer.on('upgrade', upgradeHandler);
-                    
+
                     httpsServer.listen(portNum, this.hostname, () => {
                         log.info(`HTTPS server listening on port ${portNum}`);
                     });
@@ -551,12 +590,12 @@ class Roster {
                                 const keyPath = path.join(certPath, 'privkey.pem');
                                 const certFilePath = path.join(certPath, 'cert.pem');
                                 const chainPath = path.join(certPath, 'chain.pem');
-                                
+
                                 if (fs.existsSync(keyPath) && fs.existsSync(certFilePath) && fs.existsSync(chainPath)) {
                                     const key = fs.readFileSync(keyPath, 'utf8');
                                     const cert = fs.readFileSync(certFilePath, 'utf8');
                                     const chain = fs.readFileSync(chainPath, 'utf8');
-                                    
+
                                     callback(null, tls.createSecureContext({
                                         key: key,
                                         cert: cert + chain
@@ -569,25 +608,25 @@ class Roster {
                             }
                         }
                     };
-                    
+
                     const httpsServer = https.createServer(httpsOptions, dispatcher);
-                    
+
                     // Handle WebSocket upgrade events
                     httpsServer.on('upgrade', upgradeHandler);
-                    
+
                     httpsServer.on('error', (error) => {
                         log.error(`HTTPS server error on port ${portNum}:`, error.message);
                     });
-                    
+
                     httpsServer.on('tlsClientError', (error) => {
                         // Suppress HTTP request errors to avoid log spam
                         if (!error.message.includes('http request')) {
                             log.error(`TLS error on port ${portNum}:`, error.message);
                         }
                     });
-                    
+
                     this.portServers[portNum] = httpsServer;
-                    
+
                     httpsServer.listen(portNum, this.hostname, (error) => {
                         if (error) {
                             log.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);

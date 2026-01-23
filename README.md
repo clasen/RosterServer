@@ -185,10 +185,10 @@ server.start();
 
 ### Port Assignment
 
-In local mode, domains are automatically assigned ports starting from 3000:
+In local mode, domains are automatically assigned ports based on a CRC32 hash of the domain name (range 4000-9999):
 
-- `example.com` → `http://localhost:3000`
-- `api.example.com` → `http://localhost:3001`  
+- `example.com` → `http://localhost:9465`
+- `api.example.com` → `http://localhost:9388`  
 - And so on...
 
 ## 🧂 A Touch of Magic
