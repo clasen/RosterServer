@@ -166,6 +166,8 @@ When creating a new `RosterServer` instance, you can pass the following options:
 - `greenlockStorePath` (string): Directory for Greenlock configuration.
 - `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).
 - `local` (boolean): Set to `true` to run in local development mode.
+- `minLocalPort` (number): Minimum port for local mode (default: 4000).
+- `maxLocalPort` (number): Maximum port for local mode (default: 9999).
 
 ## 🏠 Local Development Mode
 
@@ -178,18 +180,83 @@ When `{ local: true }` is enabled, RosterServer **Skips SSL/HTTPS**: Runs pure H
 ```javascript
 const server = new Roster({
     wwwPath: '/srv/www',
-    local: true  // Enable local development mode
+    local: true,  // Enable local development mode
+    minLocalPort: 4000,  // Optional: minimum port (default: 4000)
+    maxLocalPort: 9999   // Optional: maximum port (default: 9999)
 });
 server.start();
 ```
 
 ### Port Assignment
 
-In local mode, domains are automatically assigned ports based on a CRC32 hash of the domain name (range 4000-9999):
+In local mode, domains are automatically assigned ports based on a CRC32 hash of the domain name (default range 4000-9999, configurable via `minLocalPort` and `maxLocalPort`):
 
 - `example.com` → `http://localhost:9465`
 - `api.example.com` → `http://localhost:9388`  
 - And so on...
+
+You can customize the port range:
+
+```javascript
+const roster = new Roster({ 
+    local: true,
+    minLocalPort: 5000,  // Start from port 5000
+    maxLocalPort: 6000   // Up to port 6000
+});
+```
+
+### Getting Local URLs
+
+RosterServer provides two methods to get the local URL for a domain:
+
+**1. Static Method (Predictable, No Instance Required):**
+
+```javascript
+// Get the URL before starting the server (using default range 4000-9999)
+const url = Roster.getLocalUrl('example.com');
+console.log(url); // http://localhost:9465
+
+// Or specify custom port range
+const customUrl = Roster.getLocalUrl('example.com', { 
+    minLocalPort: 5000, 
+    maxLocalPort: 6000 
+});
+```
+
+This static method calculates the port deterministically using CRC32, so you can predict the URL before even creating a Roster instance.
+
+**2. Instance Method (After Registration):**
+
+```javascript
+const roster = new Roster({ local: true });
+roster.register('example.com', handler);
+
+await roster.start();
+
+// Get the actual URL assigned to the domain
+const url = roster.getLocalUrl('example.com');
+console.log(url); // http://localhost:9465
+```
+
+This instance method returns the actual URL assigned to the domain after the server starts. It's useful when you need to confirm the URL or when there might be port collisions.
+
+**Example Usage:**
+
+```javascript
+const roster = new Roster({ local: true });
+
+roster.register('example.com', (httpsServer) => {
+    return (req, res) => {
+        res.writeHead(200);
+        res.end('Hello World!');
+    };
+});
+
+roster.start().then(() => {
+    const url = roster.getLocalUrl('example.com');
+    console.log(`Server available at: ${url}`);
+});
+```
 
 ## 🧂 A Touch of Magic
 

@@ -160,9 +160,12 @@ class Roster {
         this.sites = {};
         this.domainServers = {}; // Store separate servers for each domain
         this.portServers = {}; // Store servers by port
+        this.domainPorts = {}; // Store domain → port mapping for local mode
         this.assignedPorts = new Set(); // Track ports assigned to domains (not OS availability)
         this.hostname = options.hostname || '0.0.0.0';
         this.filename = options.filename || 'index';
+        this.minLocalPort = options.minLocalPort || 4000;
+        this.maxLocalPort = options.maxLocalPort || 9999;
 
         const port = options.port === undefined ? 443 : options.port;
         if (port === 80 && !this.local) {
@@ -363,19 +366,57 @@ class Roster {
         return { domain: domainString, port: this.defaultPort };
     }
 
+    /**
+     * Get the local URL for a domain when running in local mode
+     * @param {string} domain - The domain name (e.g., 'example.com')
+     * @param {Object} options - Optional configuration
+     * @param {number} options.minLocalPort - Minimum port range (default: 4000)
+     * @param {number} options.maxLocalPort - Maximum port range (default: 9999)
+     * @returns {string} The local URL (e.g., 'http://localhost:4321')
+     */
+    static getLocalUrl(domain, options = {}) {
+        const minPort = options.minLocalPort || 4000;
+        const maxPort = options.maxLocalPort || 9999;
+        
+        // Remove www prefix if present
+        const cleanDomain = domain.startsWith('www.') ? domain.slice(4) : domain;
+        
+        // Calculate deterministic port
+        const port = domainToPort(cleanDomain, minPort, maxPort);
+        
+        return `http://localhost:${port}`;
+    }
+
+    /**
+     * Get the local URL for a domain that was registered on this instance
+     * @param {string} domain - The domain name
+     * @returns {string|null} The local URL if found, null otherwise
+     */
+    getLocalUrl(domain) {
+        // Remove www prefix if present
+        const cleanDomain = domain.startsWith('www.') ? domain.slice(4) : domain;
+        
+        // Check if domain has a port assigned
+        if (this.domainPorts && this.domainPorts[cleanDomain]) {
+            return `http://localhost:${this.domainPorts[cleanDomain]}`;
+        }
+        
+        return null;
+    }
+
     createVirtualServer(domain) {
         return new VirtualServer(domain);
     }
 
     // Assign port to domain, detecting collisions with already assigned ports
-    assignPortToDomain(domain, minPort = 4000, maxPort = 9999) {
-        let port = domainToPort(domain, minPort, maxPort);
+    assignPortToDomain(domain) {
+        let port = domainToPort(domain, this.minLocalPort, this.maxLocalPort);
 
         // If port is already assigned to another domain, increment until we find a free one
         while (this.assignedPorts.has(port)) {
             port++;
-            if (port > maxPort) {
-                port = minPort; // Wrap around if we exceed max port
+            if (port > this.maxLocalPort) {
+                port = this.minLocalPort; // Wrap around if we exceed max port
             }
         }
 
@@ -403,6 +444,9 @@ class Roster {
 
     // Start server in local mode with HTTP - simplified version
     startLocalMode() {
+        // Store mapping of domain to port for later retrieval
+        this.domainPorts = {};
+        
         // Create a simple HTTP server for each domain with CRC32-based ports
         for (const [hostKey, siteApp] of Object.entries(this.sites)) {
             const domain = hostKey.split(':')[0]; // Remove port if present
@@ -413,7 +457,10 @@ class Roster {
             }
 
             // Calculate deterministic port based on domain CRC32, with collision detection
-            const port = this.assignPortToDomain(domain, 4000, 9999);
+            const port = this.assignPortToDomain(domain);
+            
+            // Store domain → port mapping
+            this.domainPorts[domain] = port;
 
             // Create virtual server for the domain
             const virtualServer = this.createVirtualServer(domain);
