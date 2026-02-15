@@ -27,11 +27,7 @@ roster.register('example.com', (httpsServer) => {
 });
 
 roster.start().then(() => {
-    // Get local URL for registered domain (requires instance)
-    const url = roster.getLocalUrl('example.com');
+    // Get URL for registered domain (adapts to environment)
+    const url = roster.getUrl('example.com');
     console.log(`✅ Socket.IO server available at: ${url}`);
-    
-    // Get local URL without instance (static method - predictable port)
-    const staticUrl = Roster.getLocalUrl('example.com');
-    console.log(`ℹ️  Static prediction: ${staticUrl}`);
 });

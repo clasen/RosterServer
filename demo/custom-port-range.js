@@ -7,15 +7,7 @@ const roster = new Roster({
     maxLocalPort: 5100   // Custom maximum port
 });
 
-console.log('\n📍 Static URL Prediction with custom range (5000-5100):');
-console.log('example.com →', Roster.getLocalUrl('example.com', { 
-    minLocalPort: 5000, 
-    maxLocalPort: 5100 
-}));
-console.log('api.example.com →', Roster.getLocalUrl('api.example.com', { 
-    minLocalPort: 5000, 
-    maxLocalPort: 5100 
-}));
+console.log('\n🔧 Creating server with custom port range (5000-5100)...\n');
 
 roster.register('example.com', (httpsServer) => {
     return (req, res) => {
@@ -32,9 +24,9 @@ roster.register('api.example.com', (httpsServer) => {
 });
 
 roster.start().then(() => {
-    console.log('\n🚀 Server Started with custom port range:');
-    console.log('example.com →', roster.getLocalUrl('example.com'));
-    console.log('api.example.com →', roster.getLocalUrl('api.example.com'));
+    console.log('🚀 Server Started with custom port range:');
+    console.log('example.com →', roster.getUrl('example.com'));
+    console.log('api.example.com →', roster.getUrl('api.example.com'));
     
     console.log('\n✅ Both domains running in custom port range (5000-5100)!');
 });

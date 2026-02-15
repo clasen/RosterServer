@@ -18,6 +18,14 @@ Welcome to **RosterServer**, the ultimate domain host router with automatic HTTP
 npm install roster-server
 ```
 
+## 🤖 AI Skill
+
+You can also add RosterServer as a skill for AI agentic development:
+
+```bash
+npx skills add https://github.com/clasen/RosterServer --skill roster-server
+```
+
 ## 🛠️ Usage
 
 ### Directory Structure
@@ -205,27 +213,11 @@ const roster = new Roster({
 });
 ```
 
-### Getting Local URLs
+### Getting URLs
 
-RosterServer provides two methods to get the local URL for a domain:
+RosterServer provides a method to get the URL for a domain that adapts automatically to your environment:
 
-**1. Static Method (Predictable, No Instance Required):**
-
-```javascript
-// Get the URL before starting the server (using default range 4000-9999)
-const url = Roster.getLocalUrl('example.com');
-console.log(url); // http://localhost:9465
-
-// Or specify custom port range
-const customUrl = Roster.getLocalUrl('example.com', { 
-    minLocalPort: 5000, 
-    maxLocalPort: 6000 
-});
-```
-
-This static method calculates the port deterministically using CRC32, so you can predict the URL before even creating a Roster instance.
-
-**2. Instance Method (After Registration):**
+**Instance Method: `roster.getUrl(domain)`**
 
 ```javascript
 const roster = new Roster({ local: true });
@@ -233,29 +225,43 @@ roster.register('example.com', handler);
 
 await roster.start();
 
-// Get the actual URL assigned to the domain
-const url = roster.getLocalUrl('example.com');
-console.log(url); // http://localhost:9465
+// Get the URL - automatically adapts to environment
+const url = roster.getUrl('example.com');
+console.log(url); 
+// Local mode: http://localhost:9465
+// Production mode: https://example.com
 ```
 
-This instance method returns the actual URL assigned to the domain after the server starts. It's useful when you need to confirm the URL or when there might be port collisions.
+This method:
+- Returns the correct URL based on your environment (`local: true/false`)
+- In **local mode**: Returns `http://localhost:{port}` with the assigned port
+- In **production mode**: Returns `https://{domain}` (or with custom port if configured)
+- Handles `www.` prefix automatically (returns same URL)
+- Returns `null` for domains that aren't registered
 
 **Example Usage:**
 
 ```javascript
-const roster = new Roster({ local: true });
+// Local development
+const localRoster = new Roster({ local: true });
+localRoster.register('example.com', handler);
+await localRoster.start();
+console.log(localRoster.getUrl('example.com')); 
+// → http://localhost:9465
 
-roster.register('example.com', (httpsServer) => {
-    return (req, res) => {
-        res.writeHead(200);
-        res.end('Hello World!');
-    };
-});
+// Production
+const prodRoster = new Roster({ local: false });
+prodRoster.register('example.com', handler);
+await prodRoster.start();
+console.log(prodRoster.getUrl('example.com')); 
+// → https://example.com
 
-roster.start().then(() => {
-    const url = roster.getLocalUrl('example.com');
-    console.log(`Server available at: ${url}`);
-});
+// Production with custom port
+const customRoster = new Roster({ local: false, port: 8443 });
+customRoster.register('api.example.com', handler);
+await customRoster.start();
+console.log(customRoster.getUrl('api.example.com')); 
+// → https://api.example.com:8443
 ```
 
 ## 🧂 A Touch of Magic

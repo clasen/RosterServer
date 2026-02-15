@@ -367,41 +367,32 @@ class Roster {
     }
 
     /**
-     * Get the local URL for a domain when running in local mode
-     * @param {string} domain - The domain name (e.g., 'example.com')
-     * @param {Object} options - Optional configuration
-     * @param {number} options.minLocalPort - Minimum port range (default: 4000)
-     * @param {number} options.maxLocalPort - Maximum port range (default: 9999)
-     * @returns {string} The local URL (e.g., 'http://localhost:4321')
-     */
-    static getLocalUrl(domain, options = {}) {
-        const minPort = options.minLocalPort || 4000;
-        const maxPort = options.maxLocalPort || 9999;
-        
-        // Remove www prefix if present
-        const cleanDomain = domain.startsWith('www.') ? domain.slice(4) : domain;
-        
-        // Calculate deterministic port
-        const port = domainToPort(cleanDomain, minPort, maxPort);
-        
-        return `http://localhost:${port}`;
-    }
-
-    /**
-     * Get the local URL for a domain that was registered on this instance
+     * Get the URL for a domain based on the current environment
      * @param {string} domain - The domain name
-     * @returns {string|null} The local URL if found, null otherwise
+     * @returns {string|null} The URL if domain is registered, null otherwise
      */
-    getLocalUrl(domain) {
+    getUrl(domain) {
         // Remove www prefix if present
         const cleanDomain = domain.startsWith('www.') ? domain.slice(4) : domain;
         
-        // Check if domain has a port assigned
-        if (this.domainPorts && this.domainPorts[cleanDomain]) {
-            return `http://localhost:${this.domainPorts[cleanDomain]}`;
+        // Check if domain is registered
+        const isRegistered = this.sites[cleanDomain] || this.sites[`www.${cleanDomain}`];
+        if (!isRegistered) {
+            return null;
         }
         
-        return null;
+        // Return URL based on environment
+        if (this.local) {
+            // Local mode: return localhost URL with assigned port
+            if (this.domainPorts && this.domainPorts[cleanDomain]) {
+                return `http://localhost:${this.domainPorts[cleanDomain]}`;
+            }
+            return null;
+        } else {
+            // Production mode: return HTTPS URL
+            const port = this.defaultPort === 443 ? '' : `:${this.defaultPort}`;
+            return `https://${cleanDomain}${port}`;
+        }
     }
 
     createVirtualServer(domain) {

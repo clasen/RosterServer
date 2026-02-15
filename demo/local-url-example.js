@@ -1,12 +1,8 @@
 const Roster = require('../index.js');
 
-// Example 1: Get URL before creating instance (static method)
-console.log('\n📍 Static URL Prediction (before server starts):');
-console.log('example.com →', Roster.getLocalUrl('example.com'));
-console.log('api.example.com →', Roster.getLocalUrl('api.example.com'));
-console.log('test.example.com →', Roster.getLocalUrl('test.example.com'));
+// Example: Get URL after registration (adapts to environment)
+console.log('\n🔧 Creating local development server...\n');
 
-// Example 2: Get URL after registration (instance method)
 const roster = new Roster({ local: true });
 
 roster.register('example.com', (httpsServer) => {
@@ -24,17 +20,17 @@ roster.register('api.example.com', (httpsServer) => {
 });
 
 roster.start().then(() => {
-    console.log('\n🚀 Server Started - Actual URLs:');
-    console.log('example.com →', roster.getLocalUrl('example.com'));
-    console.log('api.example.com →', roster.getLocalUrl('api.example.com'));
+    console.log('🚀 Server Started - URLs (based on environment):');
+    console.log('example.com →', roster.getUrl('example.com'));
+    console.log('api.example.com →', roster.getUrl('api.example.com'));
     
     // Test with www prefix (should return same URL)
     console.log('\n🔄 Testing www prefix handling:');
-    console.log('www.example.com →', roster.getLocalUrl('www.example.com'));
+    console.log('www.example.com →', roster.getUrl('www.example.com'));
     
     // Test non-existent domain
     console.log('\n❌ Testing non-existent domain:');
-    console.log('nonexistent.com →', roster.getLocalUrl('nonexistent.com') || 'null (domain not registered)');
+    console.log('nonexistent.com →', roster.getUrl('nonexistent.com') || 'null (domain not registered)');
     
     console.log('\n✅ All domains running!');
 });
