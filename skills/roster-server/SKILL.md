@@ -13,7 +13,7 @@ const roster = new Roster({
     email: 'admin@example.com',
     wwwPath: '/srv/www',
     greenlockStorePath: '/srv/greenlock.d',
-    staging: false  // Use true for testing
+    local: true
 });
 
 roster.start();
