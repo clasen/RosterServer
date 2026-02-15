@@ -24,9 +24,7 @@ roster.start();
 ```javascript
 const roster = new Roster({
     local: true,  // HTTP mode, no SSL
-    wwwPath: './www',
-    minLocalPort: 4000,  // Optional
-    maxLocalPort: 9999   // Optional
+    wwwPath: './www'
 });
 
 roster.start().then(() => {
