@@ -1,4 +1,7 @@
-# RosterServer Skill
+---
+name: roster-server
+description: Instructions for using the RosterServer Node.js library for virtual hosting of multiple HTTPS sites with automatic SSL certificate management via Let's Encrypt. Use when setting up domain routing, configuring isolated virtual servers per domain, managing SSL certificates, implementing Express/Socket.IO handlers with isolated server instances, local development with HTTP mode, or managing multi-domain hosting with automatic www redirects and SNI.
+---
 
 ## Overview
 
