@@ -4,7 +4,7 @@ const http = require('http');
 const https = require('https');
 const tls = require('tls');
 const { EventEmitter } = require('events');
-const Greenlock = require('greenlock-express');
+const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const log = require('lemonlog')('roster');
 
 // CRC32 implementation for deterministic port assignment
