@@ -44,16 +44,16 @@ module.exports.create = function(opts) {
             console.warn("         npx greenlock add --subject example.com --altnames example.com");
             return;
         }
-        console.info("Ready to Serve:");
+        // console.info("Ready to Serve:");
 
         var max = 3;
         if (sites.length >= 1) {
             sites.slice(0, max).forEach(function(site) {
-                console.info("\t", site.altnames.join(" "));
+                // console.info("\t", site.altnames.join(" "));
             });
         }
         if (sites.length > max) {
-            console.info("and %d others", sites.length - max);
+            // console.info("and %d others", sites.length - max);
         }
     });
 
