@@ -26,6 +26,7 @@
         "express",
         "greenlock-express",
         "shotx",
+        "bun",
         "clasen"
     ],
     "author": "Martin Clasen",

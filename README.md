@@ -11,11 +11,18 @@ Welcome to **RosterServer**, the ultimate domain host router with automatic HTTP
 - **Virtual Hosting**: Serve multiple domains from a single server.
 - **Automatic Redirects**: Redirect `www` subdomains to the root domain.
 - **Zero Configuration**: Well, almost zero. Just a tiny bit of setup.
+- **Bun compatible**: Works with both Node.js and [Bun](https://bun.sh).
 
 ## 📦 Installation
 
 ```bash
 npm install roster-server
+```
+
+Or with [Bun](https://bun.sh):
+
+```bash
+bun add roster-server
 ```
 
 ## 🤖 AI Skill
@@ -145,8 +152,14 @@ roster.register('example.com:8080', (httpsServer) => {
 ### Running the Server
 
 ```bash
-# /srv/roster/server.js
+# With Node.js
 node server.js
+```
+
+Or with Bun:
+
+```bash
+bun server.js
 ```
 
 And that's it! Your server is now hosting multiple HTTPS-enabled sites. 🎉
@@ -176,118 +189,6 @@ When creating a new `RosterServer` instance, you can pass the following options:
 - `local` (boolean): Set to `true` to run in local development mode.
 - `minLocalPort` (number): Minimum port for local mode (default: 4000).
 - `maxLocalPort` (number): Maximum port for local mode (default: 9999).
-- `tlsMode` (string): TLS backend to use — `'auto'` (default), `'greenlock'`, or `'static'`. See [TLS Configuration](#-tls-configuration) below.
-- `tlsDomain` (string): Domain whose cert files are pre-loaded as the server default in static mode (optional).
-- `tls` (object): Additional TLS options passed to `https.createServer` (e.g. `minVersion`, `maxVersion`, `ciphers`).
-
-## 🔒 TLS Configuration
-
-RosterServer supports three TLS backends, selectable with the `tlsMode` option.
-
-### Behavior matrix
-
-| `tlsMode` | Runtime | HTTPS server |
-|-----------|---------|-------------|
-| `'auto'` (default) | Node.js | Greenlock SNI — certs managed and auto-renewed automatically |
-| `'auto'` (default) | Bun | Static file certs from `greenlockStorePath/live/<domain>/` |
-| `'greenlock'` | any | Always Greenlock SNI |
-| `'static'` | any | Always static file certs |
-
-Bun's TLS stack does not support Greenlock's async SNICallback, causing a `tlsv1 alert protocol version` error. `'auto'` mode detects the runtime and picks the correct backend transparently.
-
-### Static mode cert layout
-
-In `'auto'` (Bun) or `'static'` mode, certs are read per-domain from:
-
-```
-greenlockStorePath/
-  live/
-    example.com/
-      privkey.pem
-      cert.pem
-      chain.pem
-    api.example.com/
-      privkey.pem
-      cert.pem
-      chain.pem
-```
-
-Greenlock populates this layout automatically when it renews certificates, so no extra tooling is required.
-
-### Default TLS options
-
-The static-cert path enforces secure defaults that can be overridden with the `tls` option:
-
-```javascript
-{ minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3' }
-```
-
-### Examples
-
-**Default — works on both Node and Bun without changes:**
-
-```javascript
-const roster = new Roster({
-    email: 'admin@example.com',
-    wwwPath: '/srv/www'
-    // tlsMode defaults to 'auto'
-});
-roster.start();
-```
-
-**Force Greenlock on all runtimes:**
-
-```javascript
-const roster = new Roster({
-    email: 'admin@example.com',
-    wwwPath: '/srv/www',
-    tlsMode: 'greenlock'
-});
-roster.start();
-```
-
-**Force static certs with a pre-loaded default cert (avoids SNI-less connection failures):**
-
-```javascript
-const roster = new Roster({
-    email: 'admin@example.com',
-    wwwPath: '/srv/www',
-    tlsMode: 'static',
-    tlsDomain: 'example.com'  // loaded as the server's fallback cert
-});
-roster.start();
-```
-
-**Custom TLS options (e.g. restrict ciphers):**
-
-```javascript
-const roster = new Roster({
-    email: 'admin@example.com',
-    wwwPath: '/srv/www',
-    tls: {
-        minVersion: 'TLSv1.2',
-        ciphers: 'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
-    }
-});
-roster.start();
-```
-
-### Smoke test
-
-After deploying, verify TLS is working:
-
-```bash
-curl -v https://example.com
-# Should show TLSv1.2 or TLSv1.3 in the handshake — no "alert protocol version" errors
-```
-
-Server logs will display the active mode on startup:
-
-```
-Runtime: bun | TLS mode: static
-HTTPS port 443: using static certs from /srv/greenlock.d/live [static]
-HTTPS server listening on port 443
-```
 
 ## 🏠 Local Development Mode
 

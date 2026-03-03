@@ -166,84 +166,14 @@ class Roster {
         this.filename = options.filename || 'index';
         this.minLocalPort = options.minLocalPort || 4000;
         this.maxLocalPort = options.maxLocalPort || 9999;
+        this.tlsMinVersion = options.tlsMinVersion ?? 'TLSv1.2';
+        this.tlsMaxVersion = options.tlsMaxVersion ?? 'TLSv1.3';
 
         const port = options.port === undefined ? 443 : options.port;
         if (port === 80 && !this.local) {
             throw new Error('⚠️  Port 80 is reserved for ACME challenge. Please use a different port.');
         }
         this.defaultPort = port;
-
-        const validTlsModes = ['auto', 'greenlock', 'static'];
-        this.tlsMode = options.tlsMode || 'auto';
-        if (!validTlsModes.includes(this.tlsMode)) {
-            throw new Error(`Invalid tlsMode "${this.tlsMode}". Must be one of: ${validTlsModes.join(', ')}`);
-        }
-        this.tlsDomain = options.tlsDomain || null;
-        this.tlsOptions = options.tls || {};
-    }
-
-    detectRuntime() {
-        return typeof Bun !== 'undefined' ? 'bun' : 'node';
-    }
-
-    getEffectiveTlsMode() {
-        if (this.tlsMode !== 'auto') {
-            return this.tlsMode;
-        }
-        return this.detectRuntime() === 'bun' ? 'static' : 'greenlock';
-    }
-
-    getDefaultTlsOptions() {
-        return Object.assign({ minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3' }, this.tlsOptions);
-    }
-
-    createSNICallback() {
-        return (domain, callback) => {
-            try {
-                const certPath = path.join(this.greenlockStorePath, 'live', domain);
-                const keyPath = path.join(certPath, 'privkey.pem');
-                const certFilePath = path.join(certPath, 'cert.pem');
-                const chainPath = path.join(certPath, 'chain.pem');
-
-                if (fs.existsSync(keyPath) && fs.existsSync(certFilePath) && fs.existsSync(chainPath)) {
-                    const key = fs.readFileSync(keyPath, 'utf8');
-                    const cert = fs.readFileSync(certFilePath, 'utf8');
-                    const chain = fs.readFileSync(chainPath, 'utf8');
-
-                    callback(null, tls.createSecureContext({ key, cert: cert + chain }));
-                } else {
-                    callback(new Error(`No certificate files available for ${domain} at ${certPath}`));
-                }
-            } catch (error) {
-                callback(error);
-            }
-        };
-    }
-
-    createStaticHttpsServer(dispatcher) {
-        const tlsOpts = Object.assign(this.getDefaultTlsOptions(), {
-            SNICallback: this.createSNICallback()
-        });
-
-        if (this.tlsDomain) {
-            const certPath = path.join(this.greenlockStorePath, 'live', this.tlsDomain);
-            const keyPath = path.join(certPath, 'privkey.pem');
-            const certFilePath = path.join(certPath, 'cert.pem');
-            const chainPath = path.join(certPath, 'chain.pem');
-
-            const missing = [keyPath, certFilePath, chainPath].filter(p => !fs.existsSync(p));
-            if (missing.length > 0) {
-                throw new Error(
-                    `Static TLS cert files missing for domain "${this.tlsDomain}":\n` +
-                    missing.map(p => `  - ${p}`).join('\n')
-                );
-            }
-
-            tlsOpts.key = fs.readFileSync(keyPath, 'utf8');
-            tlsOpts.cert = fs.readFileSync(certFilePath, 'utf8') + fs.readFileSync(chainPath, 'utf8');
-        }
-
-        return https.createServer(tlsOpts, dispatcher);
     }
 
     async loadSites() {
@@ -446,13 +376,13 @@ class Roster {
     getUrl(domain) {
         // Remove www prefix if present
         const cleanDomain = domain.startsWith('www.') ? domain.slice(4) : domain;
-        
+
         // Check if domain is registered
         const isRegistered = this.sites[cleanDomain] || this.sites[`www.${cleanDomain}`];
         if (!isRegistered) {
             return null;
         }
-        
+
         // Return URL based on environment
         if (this.local) {
             // Local mode: return localhost URL with assigned port
@@ -509,7 +439,7 @@ class Roster {
     startLocalMode() {
         // Store mapping of domain to port for later retrieval
         this.domainPorts = {};
-        
+
         // Create a simple HTTP server for each domain with CRC32-based ports
         for (const [hostKey, siteApp] of Object.entries(this.sites)) {
             const domain = hostKey.split(':')[0]; // Remove port if present
@@ -521,7 +451,7 @@ class Roster {
 
             // Calculate deterministic port based on domain CRC32, with collision detection
             const port = this.assignPortToDomain(domain);
-            
+
             // Store domain → port mapping
             this.domainPorts[domain] = port;
 
@@ -651,10 +581,6 @@ class Roster {
                 };
             };
 
-            const runtime = this.detectRuntime();
-            const effectiveTlsMode = this.getEffectiveTlsMode();
-            log.info(`Runtime: ${runtime} | TLS mode: ${effectiveTlsMode}`);
-
             httpServer.listen(80, this.hostname, () => {
                 log.info('HTTP server listening on port 80');
             });
@@ -671,21 +597,10 @@ class Roster {
                     if (virtualServer) {
                         virtualServer.processUpgrade(req, socket, head);
                     } else {
+                        // No virtual server found, destroy the socket
                         socket.destroy();
                     }
                 };
-            };
-
-            const attachHttpsListeners = (httpsServer, portNum, upgradeHandler) => {
-                httpsServer.on('upgrade', upgradeHandler);
-                httpsServer.on('error', (error) => {
-                    log.error(`HTTPS server error on port ${portNum}:`, error.message);
-                });
-                httpsServer.on('tlsClientError', (error) => {
-                    if (!error.message.includes('http request')) {
-                        log.error(`TLS error on port ${portNum}:`, error.message);
-                    }
-                });
             };
 
             // Handle different port types
@@ -694,30 +609,103 @@ class Roster {
                 const dispatcher = createDispatcher(portData);
                 const upgradeHandler = createUpgradeHandler(portData);
 
-                let httpsServer;
+                if (portNum === this.defaultPort) {
+                    // Bun has known gaps around SNICallback compatibility.
+                    // Fallback to static cert loading for the primary domain on default HTTPS port.
+                    const isBunRuntime = typeof Bun !== 'undefined' || process.release?.name === 'bun';
+                    const tlsOpts = { minVersion: this.tlsMinVersion, maxVersion: this.tlsMaxVersion };
+                    let httpsServer;
 
-                if (portNum === this.defaultPort && effectiveTlsMode === 'greenlock') {
-                    log.info(`HTTPS port ${portNum}: using Greenlock SNI (certs managed automatically)`);
-                    httpsServer = glx.httpsServer(null, dispatcher);
-                } else {
-                    const modeLabel = portNum === this.defaultPort ? effectiveTlsMode : 'static';
-                    log.info(`HTTPS port ${portNum}: using static certs from ${path.join(this.greenlockStorePath, 'live')} [${modeLabel}]`);
-                    const httpsOptions = Object.assign(this.getDefaultTlsOptions(), {
-                        SNICallback: this.createSNICallback()
-                    });
-                    httpsServer = https.createServer(httpsOptions, dispatcher);
-                }
+                    if (isBunRuntime) {
+                        const primaryDomain = Object.keys(portData.virtualServers)[0];
+                        const certPath = path.join(this.greenlockStorePath, 'live', primaryDomain);
+                        const keyPath = path.join(certPath, 'privkey.pem');
+                        const certFilePath = path.join(certPath, 'cert.pem');
+                        const chainPath = path.join(certPath, 'chain.pem');
 
-                attachHttpsListeners(httpsServer, portNum, upgradeHandler);
-                this.portServers[portNum] = httpsServer;
-
-                httpsServer.listen(portNum, this.hostname, (error) => {
-                    if (error) {
-                        log.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);
+                        if (fs.existsSync(keyPath) && fs.existsSync(certFilePath) && fs.existsSync(chainPath)) {
+                            const key = fs.readFileSync(keyPath, 'utf8');
+                            const cert = fs.readFileSync(certFilePath, 'utf8');
+                            const chain = fs.readFileSync(chainPath, 'utf8');
+                            httpsServer = https.createServer({
+                                ...tlsOpts,
+                                key,
+                                cert: cert + chain
+                            }, dispatcher);
+                            log.warn(`⚠️  Bun runtime detected: using static TLS cert for ${primaryDomain} on port ${portNum}`);
+                        } else {
+                            log.warn(`⚠️  Bun runtime detected but cert files missing for ${primaryDomain}; falling back to Greenlock HTTPS server`);
+                            httpsServer = glx.httpsServer(tlsOpts, dispatcher);
+                        }
                     } else {
-                        log.info(`HTTPS server listening on port ${portNum}`);
+                        httpsServer = glx.httpsServer(tlsOpts, dispatcher);
                     }
-                });
+
+                    this.portServers[portNum] = httpsServer;
+
+                    // Handle WebSocket upgrade events
+                    httpsServer.on('upgrade', upgradeHandler);
+
+                    httpsServer.listen(portNum, this.hostname, () => {
+                        log.info(`HTTPS server listening on port ${portNum}`);
+                    });
+                } else {
+                    // Create HTTPS server for custom ports using Greenlock certificates
+                    const httpsOptions = {
+                        minVersion: this.tlsMinVersion,
+                        maxVersion: this.tlsMaxVersion,
+                        // SNI callback to get certificates dynamically
+                        SNICallback: (domain, callback) => {
+                            try {
+                                const certPath = path.join(this.greenlockStorePath, 'live', domain);
+                                const keyPath = path.join(certPath, 'privkey.pem');
+                                const certFilePath = path.join(certPath, 'cert.pem');
+                                const chainPath = path.join(certPath, 'chain.pem');
+
+                                if (fs.existsSync(keyPath) && fs.existsSync(certFilePath) && fs.existsSync(chainPath)) {
+                                    const key = fs.readFileSync(keyPath, 'utf8');
+                                    const cert = fs.readFileSync(certFilePath, 'utf8');
+                                    const chain = fs.readFileSync(chainPath, 'utf8');
+
+                                    callback(null, tls.createSecureContext({
+                                        key: key,
+                                        cert: cert + chain
+                                    }));
+                                } else {
+                                    callback(new Error(`No certificate files available for ${domain}`));
+                                }
+                            } catch (error) {
+                                callback(error);
+                            }
+                        }
+                    };
+
+                    const httpsServer = https.createServer(httpsOptions, dispatcher);
+
+                    // Handle WebSocket upgrade events
+                    httpsServer.on('upgrade', upgradeHandler);
+
+                    httpsServer.on('error', (error) => {
+                        log.error(`HTTPS server error on port ${portNum}:`, error.message);
+                    });
+
+                    httpsServer.on('tlsClientError', (error) => {
+                        // Suppress HTTP request errors to avoid log spam
+                        if (!error.message.includes('http request')) {
+                            log.error(`TLS error on port ${portNum}:`, error.message);
+                        }
+                    });
+
+                    this.portServers[portNum] = httpsServer;
+
+                    httpsServer.listen(portNum, this.hostname, (error) => {
+                        if (error) {
+                            log.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);
+                        } else {
+                            log.info(`HTTPS server listening on port ${portNum}`);
+                        }
+                    });
+                }
             }
         });
     }
