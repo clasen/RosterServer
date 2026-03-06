@@ -6,6 +6,7 @@ var Master = module.exports;
 
 var cluster = require("cluster");
 var os = require("os");
+var log = require("lemonlog")("greenlock-master");
 var msgPrefix = "greenlock:";
 
 Master.create = function(opts) {
@@ -112,11 +113,11 @@ Master._spawnWorker = function(opts, greenlock) {
 
         // For now just kill all when any die
         if (signal) {
-            console.error("worker was killed by signal:", signal);
+            log.error("worker was killed by signal:", signal);
         } else if (code !== 0) {
-            console.error("worker exited with error code:", code);
+            log.error("worker exited with error code:", code);
         } else {
-            console.error("worker unexpectedly quit without exit code or signal");
+            log.error("worker unexpectedly quit without exit code or signal");
         }
         process.exit(2);
 
@@ -155,8 +156,8 @@ Master._spawnWorker = function(opts, greenlock) {
         try {
             rpc();
         } catch (e) {
-            console.error("Unexpected and uncaught greenlock." + msg._funcname + " error:");
-            console.error(e);
+            log.error("Unexpected and uncaught greenlock." + msg._funcname + " error:");
+            log.error(e);
         }
     }
 

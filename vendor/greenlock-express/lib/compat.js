@@ -1,13 +1,15 @@
 "use strict";
 
+var log = require("lemonlog")("greenlock-compat");
+
 function requireBluebird() {
     try {
         return require("bluebird");
     } catch (e) {
-        console.error("");
-        console.error("DON'T PANIC. You're running an old version of node with incomplete Promise support.");
-        console.error("EASY FIX: `npm install --save bluebird`");
-        console.error("");
+        log.error("");
+        log.error("DON'T PANIC. You're running an old version of node with incomplete Promise support.");
+        log.error("EASY FIX: `npm install --save bluebird`");
+        log.error("");
         throw e;
     }
 }
@@ -21,7 +23,9 @@ if ("function" !== typeof require("util").promisify) {
 }
 
 if (!console.debug) {
-    console.debug = console.log;
+    console.debug = function() {
+        log.debug.apply(log, arguments);
+    };
 }
 
 var fs = require("fs");

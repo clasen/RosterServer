@@ -3,6 +3,7 @@
 var HttpMiddleware = module.exports;
 var servernameRe = /^[a-z0-9\.\-]+$/i;
 var challengePrefix = "/.well-known/acme-challenge/";
+var log = require("lemonlog")("greenlock-http");
 
 HttpMiddleware.create = function(gl, defaultApp) {
     if (defaultApp && "function" !== typeof defaultApp) {
@@ -49,7 +50,7 @@ HttpMiddleware.create = function(gl, defaultApp) {
                     return;
                 }
                 if (done) {
-                    console.error("Sanity check fail: `done` is in a quantum state of both true and false... huh?");
+                    log.error("Invariant violation: challenge middleware reached `done=true` and response path simultaneously");
                     return;
                 }
                 // HEADERS SENT DEBUG NOTE #4b
@@ -60,16 +61,16 @@ HttpMiddleware.create = function(gl, defaultApp) {
                 // HEADERS SENT DEBUG NOTE #5
                 // I really don't see how this can be possible.
                 // Every case appears to be accounted for
-                console.error();
-                console.error("[warning] Developer Error:" + (err.code || err.context || ""), countA, countB);
-                console.error(err.stack);
-                console.error();
-                console.error(
-                    "This is probably the error that happens routinely on http2 connections, but we're not sure why."
+                log.error(
+                    "Unhandled ACME challenge middleware error",
+                    {
+                        code: err.code || null,
+                        context: err.context || null,
+                        catchCountA: countA,
+                        catchCountB: countB
+                    }
                 );
-                console.error("To track the status or help contribute,");
-                console.error("visit: https://git.rootprojects.org/root/greenlock-express.js/issues/9");
-                console.error();
+                log.error(err.stack || err.message || err);
                 try {
                     res.end("Internal Server Error [1003]: See logs for details.");
                 } catch (e) {
@@ -114,7 +115,11 @@ function explainError(gl, err, ctx, hostname) {
         err.context = ctx;
     }
     // leaving this in the build for now because it will help with existing error reports
-    console.error("[warning] network connection error:", (err.context || "") + " " + err.message);
+    log.error("Network connection error during ACME challenge handling", {
+        context: err.context || "",
+        servername: err.servername || hostname || "",
+        message: err.message
+    });
     (gl.notify || gl._notify)("error", err);
     return err;
 }

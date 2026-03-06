@@ -7,6 +7,7 @@ var HttpMiddleware = require("./http-middleware.js");
 var HttpsMiddleware = require("./https-middleware.js");
 var sni = require("./sni.js");
 var cluster = require("cluster");
+var log = require("lemonlog")("greenlock-servers");
 
 Servers.create = function(greenlock) {
     var servers = {};
@@ -21,7 +22,7 @@ Servers.create = function(greenlock) {
     servers.httpServer = function(defaultApp) {
         if (_httpServer) {
             if (defaultApp) {
-                console.error("error: can only call httpServer(app) once");
+                log.error("Invalid API usage: `httpServer(app)` can only be called once");
                 process.exit(1);
             }
             return _httpServer;
@@ -104,7 +105,7 @@ Servers.create = function(greenlock) {
             var plainAddr = "0.0.0.0";
             var plainPort = 80;
             plainServer.listen(plainPort, plainAddr, function() {
-                console.info(
+                log.info(
                     idstr + "Listening on",
                     plainAddr + ":" + plainPort,
                     "for ACME challenges, and redirecting to HTTPS"
@@ -116,7 +117,7 @@ Servers.create = function(greenlock) {
                 var secureAddr = "0.0.0.0";
                 var securePort = 443;
                 secureServer.listen(securePort, secureAddr, function() {
-                    console.info(idstr + "Listening on", secureAddr + ":" + securePort, "for secure traffic");
+                    log.info(idstr + "Listening on", secureAddr + ":" + securePort, "for secure traffic");
 
                     plainServer.removeListener("error", startError);
                     secureServer.removeListener("error", startError);
@@ -130,18 +131,21 @@ Servers.create = function(greenlock) {
 };
 
 function explainError(e) {
-    console.error();
-    console.error("Error: " + e.message);
+    log.error("Server startup error", {
+        code: e.code || e.errno || null,
+        address: e.address || null,
+        port: e.port || null,
+        message: e.message
+    });
     if ("EACCES" === e.errno) {
-        console.error("You don't have prmission to access '" + e.address + ":" + e.port + "'.");
-        console.error('You probably need to use "sudo" or "sudo setcap \'cap_net_bind_service=+ep\' $(which node)"');
+        log.error("Insufficient permission to bind " + e.address + ":" + e.port + ".");
+        log.error('You probably need to use "sudo" or "sudo setcap \'cap_net_bind_service=+ep\' $(which node)"');
     } else if ("EADDRINUSE" === e.errno) {
-        console.error("'" + e.address + ":" + e.port + "' is already being used by some other program.");
-        console.error("You probably need to stop that program or restart your computer.");
+        log.error("Address already in use: " + e.address + ":" + e.port + ".");
+        log.error("You probably need to stop that program or restart your computer.");
     } else {
-        console.error(e.code + ": '" + e.address + ":" + e.port + "'");
+        log.error(e.code + ": '" + e.address + ":" + e.port + "'");
     }
-    console.error();
 }
 
 function wrapDefaultSniCallback(greenlock, secureOpts) {
@@ -156,13 +160,8 @@ function wrapDefaultSniCallback(greenlock, secureOpts) {
 		}
   */
     if (secureOpts.SNICallback) {
-        console.warn();
-        console.warn("[warning] Ignoring the given tlsOptions.SNICallback function.");
-        console.warn();
-        console.warn("          We're very open to implementing support for this,");
-        console.warn("          we just don't understand the use case yet.");
-        console.warn("          Please open an issue to discuss. We'd love to help.");
-        console.warn();
+        log.warn("Ignoring user-provided tlsOptions.SNICallback; Greenlock-managed SNI callback is required");
+        log.warn("If you need custom SNI behavior, open an issue to discuss integration support");
     }
 
     // TODO greenlock.servername for workers

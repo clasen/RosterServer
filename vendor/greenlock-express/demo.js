@@ -1,10 +1,12 @@
 "use strict";
 
+var log = require("lemonlog")("greenlock-demo");
+
 require("./")
     .init(initialize)
     .serve(worker)
     .master(function() {
-        console.log("Hello from master");
+        log.info("Hello from master");
     });
 
 function initialize() {
@@ -19,15 +21,15 @@ function initialize() {
         cluster: true,
 
         notify: function(ev, params) {
-            console.info(ev, params);
+            log.info(ev, params);
         }
     };
     return config;
 }
 
 function worker(glx) {
-    console.info();
-    console.info("Hello from worker #" + glx.id());
+    log.info("");
+    log.info("Hello from worker #" + glx.id());
 
     glx.serveApp(function(req, res) {
         res.end("Hello, Encrypted World!");

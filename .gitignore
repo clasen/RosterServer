@@ -108,3 +108,5 @@ dist
 
 greenlock.d
 CLAUDE.md
+/.agents
+skills-lock.json

@@ -2,6 +2,7 @@
 
 var sni = module.exports;
 var tls = require("tls");
+var log = require("lemonlog")("greenlock-sni");
 var servernameRe = /^[a-z0-9\.\-]+$/i;
 
 // a nice, round, irrational number - about every 6¼ hours
@@ -32,23 +33,21 @@ sni.create = function(greenlock, secureOpts) {
             // TODO _notify() or notify()?
             (greenlock.notify || greenlock._notify)(ev, args);
         } catch (e) {
-            console.error(e);
-            console.error(ev, args);
+            log.error(e);
+            log.error(ev, args);
         }
     }
 
     function getSecureContext(servername, cb) {
-        //console.log("debug sni", servername);
         if ("string" !== typeof servername) {
             // this will never happen... right? but stranger things have...
-            console.error("[sanity fail] non-string servername:", servername);
+            log.error("[sanity fail] non-string servername:", servername);
             cb(new Error("invalid servername"), null);
             return;
         }
 
         var secureContext = getCachedContext(servername);
         if (secureContext) {
-            //console.log("debug sni got cached context", servername, getCachedMeta(servername));
             cb(null, secureContext);
             return;
         }
@@ -56,20 +55,19 @@ sni.create = function(greenlock, secureOpts) {
         getFreshContext(servername)
             .then(function(secureContext) {
                 if (secureContext) {
-                    //console.log("debug sni got fresh context", servername, getCachedMeta(servername));
                     cb(null, secureContext);
                     return;
                 }
 
                 // Note: this does not replace tlsSocket.setSecureContext()
                 // as it only works when SNI has been sent
-                //console.log("debug sni got default context", servername, getCachedMeta(servername));
                 if (!/PROD/.test(process.env.ENV) || /DEV|STAG/.test(process.env.ENV)) {
                     // Change this once
                     // A) the 'notify' message passing is verified fixed in cluster mode
                     // B) we have a good way to let people know their server isn't configured
-                    console.debug("debug: ignoring servername " + JSON.stringify(servername));
-                    console.debug("       (it's probably either missing from your config, or a bot)");
+                    log.debug("SNI servername not configured; falling back to default context", {
+                        servername: servername
+                    });
                     notify("servername_unknown", {
                         servername: servername
                     });
@@ -81,7 +79,6 @@ sni.create = function(greenlock, secureOpts) {
                     err.context = "sni_callback";
                 }
                 notify("error", err);
-                //console.log("debug sni error", servername, err);
                 cb(err);
             });
     }
@@ -125,8 +122,9 @@ sni.create = function(greenlock, secureOpts) {
                 // Change this once
                 // A) the 'notify' message passing is verified fixed in cluster mode
                 // B) we have a good way to let people know their server isn't configured
-                console.debug("debug: invalid servername " + JSON.stringify(servername));
-                console.debug("       (it's probably just a bot trolling for vulnerable servers)");
+                log.debug("Invalid SNI servername received; skipping certificate lookup", {
+                    servername: servername
+                });
                 notify("servername_invalid", {
                     servername: servername
                 });

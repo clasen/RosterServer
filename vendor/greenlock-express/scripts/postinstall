@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 "use strict";
+var log = require("lemonlog")("greenlock-postinstall");
 
 // BG WH \u001b[47m
 // BOLD  \u001b[1m
@@ -68,7 +69,7 @@ setTimeout(function() {
 		"================================================================================",
 		""
 	]).forEach(function(line) {
-		console.info(line);
+		log.info(line);
 	});
 }, 300);
 

@@ -2,6 +2,7 @@
 
 module.exports.create = function(opts) {
     var Greenlock = require("@root/greenlock");
+    var log = require("lemonlog")("greenlock-shim");
     //var Init = require("@root/greenlock/lib/init.js");
     var greenlock = opts.greenlock;
 
@@ -28,7 +29,7 @@ module.exports.create = function(opts) {
             greenlock._defaults.notify = opts.notify;
         }
     } catch (e) {
-        console.error("Developer Error: notify not attached correctly");
+        log.error("Developer Error: notify not attached correctly");
     }
 
     // re-export as top-level function to simplify rpc with workers
@@ -38,22 +39,11 @@ module.exports.create = function(opts) {
 
     greenlock._find({}).then(function(sites) {
         if (sites.length <= 0) {
-            console.warn("Warning: `find({})` returned 0 sites.");
-            console.warn("         Does `" + greenlock.manager._modulename + "` implement `find({})`?");
-            console.warn("         Did you add sites?");
-            console.warn("         npx greenlock add --subject example.com --altnames example.com");
+            log.warn("Warning: `find({})` returned 0 sites.");
+            log.warn("         Does `" + greenlock.manager._modulename + "` implement `find({})`?");
+            log.warn("         Did you add sites?");
+            log.warn("         npx greenlock add --subject example.com --altnames example.com");
             return;
-        }
-        // console.info("Ready to Serve:");
-
-        var max = 3;
-        if (sites.length >= 1) {
-            sites.slice(0, max).forEach(function(site) {
-                // console.info("\t", site.altnames.join(" "));
-            });
-        }
-        if (sites.length > max) {
-            // console.info("and %d others", sites.length - max);
         }
     });
 

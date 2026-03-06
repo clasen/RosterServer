@@ -2,6 +2,7 @@
 
 var SanitizeHost = module.exports;
 var HttpMiddleware = require("./http-middleware.js");
+var log = require("lemonlog")("greenlock-https");
 
 SanitizeHost.create = function(gl, app) {
     return function(req, res, next) {
@@ -61,8 +62,6 @@ SanitizeHost.create = function(gl, app) {
 				// and such).
 				// It was common for the log message to pop up as the first request
 				// to the server, and that was confusing. So instead now we do nothing.
-
-				//console.warn("no string for req.socket.servername," + " skipping fronting check for '" + safehost + "'");
 				//gl._skip_fronting_check = true;
 			}
       */
@@ -94,7 +93,7 @@ SanitizeHost._checkServername = function(safeHost, tlsSocket) {
         // domain fronting attacks allowed
         if (warnDomainFronting) {
             // https://github.com/nodejs/node/issues/24095
-            console.warn(
+            log.warn(
                 "Warning: node " +
                     process.version +
                     " is vulnerable to domain fronting attacks. Please use node v11.2.0 or greater."
@@ -111,7 +110,6 @@ SanitizeHost._checkServername = function(safeHost, tlsSocket) {
         // TODO optimize / cache?
         // *should* always have a string, right?
         // *should* always be lowercase already, right?
-        //console.log(safeHost, cert.subject.CN, cert.subjectaltname);
         var isSubject = (cert.subject.CN || "").toLowerCase() === safeHost;
         if (isSubject) {
             return true;
@@ -129,7 +127,7 @@ SanitizeHost._checkServername = function(safeHost, tlsSocket) {
     } catch (e) {
         // not sure what else to do in this situation...
         if (warnUnexpectedError) {
-            console.warn("Warning: encoutered error while performing domain fronting check: " + e.message);
+            log.warn("Encountered error while performing domain fronting check: " + e.message);
             warnUnexpectedError = false;
         }
         return true;

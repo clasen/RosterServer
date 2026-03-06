@@ -46,17 +46,54 @@ Your project should look something like this:
 └── www/
     ├── example.com/
     │   └── index.js
-    └── subdomain.example.com/
+    ├── subdomain.example.com/
     │   └── index.js
-    └── other-domain.com/
-        └── index.js        
+    ├── other-domain.com/
+    │   └── index.js
+    └── *.example.com/          # Wildcard: one handler for all subdomains (api.example.com, app.example.com, etc.)
+        └── index.js
 ```
+
+### Wildcard DNS (*.example.com)
+
+You can serve all subdomains of a domain with a single handler in three ways:
+
+1. **Folder**: Create a directory named literally `*.example.com` under `www` (e.g. `www/*.example.com/index.js`). Any request to `api.example.com`, `app.example.com`, etc. will use that handler.
+2. **Register (default port)**: `roster.register('*.example.com', handler)` for the default HTTPS port.
+3. **Register (custom port)**: `roster.register('*.example.com:8080', handler)` for a specific port.
+
+Wildcard SSL certificates require **DNS-01** validation (Let's Encrypt does not support HTTP-01 for wildcards). By default Roster uses `acme-dns-01-cli` through an internal wrapper (adds `propagationDelay` and modern plugin signatures).
+
+For fully automatic TXT records with Linode DNS, set:
+
+```bash
+export ROSTER_DNS_PROVIDER=linode
+export LINODE_API_KEY=...
+```
+
+Then Roster creates/removes `_acme-challenge` TXT records automatically via `api.linode.com`.
+If `LINODE_API_KEY` is present, this mode auto-enables by default for wildcard DNS-01.
+
+Override with a custom plugin:
+
+```javascript
+import Roster from 'roster-server';
+
+const roster = new Roster({
+    email: 'admin@example.com',
+    wwwPath: '/srv/www',
+    greenlockStorePath: '/srv/greenlock.d',
+    dnsChallenge: { module: 'acme-dns-01-route53', /* provider options */ }  // optional override
+});
+```
+
+Set `dnsChallenge: false` to disable. For other DNS providers install the plugin in your app and pass it. See [Greenlock DNS plugins](https://git.rootprojects.org/root/greenlock-express.js#dns-01-challenge-plugins).
 
 ### Setting Up Your Server
 
 ```javascript
 // /srv/roster/server.js
-const Roster = require('roster-server');
+import Roster from 'roster-server';
 
 const options = {
     email: 'admin@example.com',
@@ -78,7 +115,7 @@ I'll help analyze the example files shown. You have 3 different implementations 
 
 1. **Basic HTTP Handler**:
 ```javascript:demo/www/example.com/index.js
-module.exports = (httpsServer) => {
+export default (httpsServer) => {
     return (req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
@@ -88,9 +125,9 @@ module.exports = (httpsServer) => {
 
 2. **Express App**:
 ```javascript:demo/www/express.example.com/index.js
-const express = require('express');
+import express from 'express';
 
-module.exports = (httpsServer) => {
+export default (httpsServer) => {
     const app = express();
     app.get('/', (req, res) => {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -103,9 +140,9 @@ module.exports = (httpsServer) => {
 
 3. **Socket.IO Server**:
 ```javascript:demo/www/sio.example.com/index.js
-const { Server } = require('socket.io');
+import { Server } from 'socket.io';
 
-module.exports = (httpsServer) => {
+export default (httpsServer) => {
     const io = new Server(httpsServer);
 
     io.on('connection', (socket) => {
@@ -185,6 +222,7 @@ When creating a new `RosterServer` instance, you can pass the following options:
 - `email` (string): Your email for Let's Encrypt notifications.
 - `wwwPath` (string): Path to your `www` directory containing your sites.
 - `greenlockStorePath` (string): Directory for Greenlock configuration.
+- `dnsChallenge` (object|false): Optional override for wildcard DNS-01 challenge config. Default is `acme-dns-01-cli` wrapper with `propagationDelay: 120000`, `autoContinue: false`, and `dryRunDelay: 120000`. Manual mode still works, but you can enable automatic Linode DNS API mode by setting `ROSTER_DNS_PROVIDER=linode` and `LINODE_API_KEY`. In automatic mode, Roster creates/removes TXT records itself and still polls public resolvers every 15s before continuing. Set `false` to disable DNS challenge. You can pass `{ module: '...', propagationDelay: 180000 }` to tune DNS wait time (ms). For Greenlock dry-runs (`_greenlock-dryrun-*`), delay defaults to `dryRunDelay` (same as `propagationDelay` unless overridden with `dnsChallenge.dryRunDelay` or env `ROSTER_DNS_DRYRUN_DELAY_MS`). When wildcard sites are present, Roster creates a separate wildcard certificate (`*.example.com`) that uses `dns-01`, while apex/www stay on the regular certificate flow (typically `http-01`), reducing manual TXT records.
 - `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).
 - `local` (boolean): Set to `true` to run in local development mode.
 - `minLocalPort` (number): Minimum port for local mode (default: 4000).
@@ -199,6 +237,8 @@ When `{ local: true }` is enabled, RosterServer **Skips SSL/HTTPS**: Runs pure H
 ### Setting Up Local Mode
 
 ```javascript
+import Roster from 'roster-server';
+
 const server = new Roster({
     wwwPath: '/srv/www',
     local: true,  // Enable local development mode
@@ -219,6 +259,8 @@ In local mode, domains are automatically assigned ports based on a CRC32 hash of
 You can customize the port range:
 
 ```javascript
+import Roster from 'roster-server';
+
 const roster = new Roster({ 
     local: true,
     minLocalPort: 5000,  // Start from port 5000
@@ -233,6 +275,8 @@ RosterServer provides a method to get the URL for a domain that adapts automatic
 **Instance Method: `roster.getUrl(domain)`**
 
 ```javascript
+import Roster from 'roster-server';
+
 const roster = new Roster({ local: true });
 roster.register('example.com', handler);
 
@@ -255,6 +299,8 @@ This method:
 **Example Usage:**
 
 ```javascript
+import Roster from 'roster-server';
+
 // Local development
 const localRoster = new Roster({ local: true });
 localRoster.register('example.com', handler);

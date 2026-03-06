@@ -40,8 +40,10 @@ project/
 ├── www/
 │   ├── example.com/
 │   │   └── index.js   # Handler for example.com
-│   └── api.example.com/
-│       └── index.js   # Handler for subdomain
+│   ├── api.example.com/
+│   │   └── index.js   # Handler for subdomain
+│   └── *.example.com/
+│       └── index.js   # Wildcard: one handler for all subdomains
 └── server.js          # Your setup
 ```
 
@@ -104,6 +106,10 @@ roster.register('example.com', (httpsServer) => {
 
 // With custom port
 roster.register('api.example.com:8443', handler);
+
+// Wildcard: one handler for all subdomains (default port or custom)
+roster.register('*.example.com', handler);
+roster.register('*.example.com:8080', handler);
 ```
 
 ## Key Configuration Options
@@ -113,6 +119,7 @@ new Roster({
     email: 'admin@example.com',      // Required for SSL
     wwwPath: '/srv/www',             // Site handlers directory
     greenlockStorePath: '/srv/greenlock.d',  // SSL storage
+    dnsChallenge: { ... },          // Optional override. Default is local/manual DNS-01 (acme-dns-01-cli)
     
     // Environment
     local: false,                    // true = HTTP, false = HTTPS
@@ -138,13 +145,13 @@ new Roster({
 Loads sites, generates SSL config, starts servers. Returns `Promise<void>`.
 
 ### `roster.register(domain, handler)`
-Manually register a domain handler. Domain can include port: `'api.com:8443'`.
+Manually register a domain handler. Domain can include port: `'api.com:8443'`. For wildcards use `'*.example.com'` or `'*.example.com:8080'`.
 
 ### `roster.getUrl(domain)`
 Get environment-aware URL:
 - Local mode: `http://localhost:{port}`
 - Production: `https://{domain}` or `https://{domain}:{port}`
-- Returns `null` if domain not registered
+- Returns `null` if domain not registered. Supports wildcard-matched hosts (e.g. `getUrl('api.example.com')` when `*.example.com` is registered).
 
 ## How It Works
 
@@ -170,6 +177,7 @@ Each domain gets isolated server instance that simulates `http.Server`:
 - Auto-renewal 45 days before expiration
 - SNI support for multiple domains
 - Custom ports reuse certificates via SNI callback
+- **Wildcard** (`*.example.com`): use folder `www/*.example.com/` or `roster.register('*.example.com', handler)`. Default DNS-01 plugin is local/manual `acme-dns-01-cli`; set `dnsChallenge` only when overriding provider integration.
 
 ## Common Issues & Solutions
 
