@@ -1,7 +1,9 @@
 "use strict";
 
+var path = require("path");
+
 module.exports.create = function(opts) {
-    var Greenlock = require("@root/greenlock");
+    var Greenlock = require(path.resolve(__dirname, "..", "greenlock", "greenlock.js"));
     var log = require("lemonlog")("greenlock-shim");
     //var Init = require("@root/greenlock/lib/init.js");
     var greenlock = opts.greenlock;
