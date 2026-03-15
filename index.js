@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
+const { resolveSiteApp } = require('./lib/resolve-site-app.js');
 const log = require('lemonlog')('roster');
 
 const isBunRuntime = typeof Bun !== 'undefined' || (typeof process !== 'undefined' && process.release?.name === 'bun');
@@ -308,49 +309,38 @@ class Roster {
             const domain = dirent.name;
             const domainPath = path.join(this.wwwPath, domain);
 
-            const possibleIndexFiles = ['js', 'mjs', 'cjs'].map(ext => `${this.filename}.${ext}`);
-            let siteApp;
-
-            for (const indexFile of possibleIndexFiles) {
-                const indexPath = path.join(domainPath, indexFile);
-                if (fs.existsSync(indexPath)) {
-                    try {
-                        // Try dynamic import first
-                        siteApp = await import(indexPath).catch(() => {
-                            // Fallback to require for CommonJS modules
-                            return require(indexPath);
-                        });
-                        // Handle default exports
-                        siteApp = siteApp.default || siteApp;
-                        break;
-                    } catch (err) {
-                        log.warn(`⚠️  Error loading ${indexPath}:`, err);
-                    }
-                }
+            let resolved;
+            try {
+                resolved = await resolveSiteApp(domainPath, { filename: this.filename });
+            } catch (err) {
+                log.warn(`⚠️  Error loading site in ${domainPath}:`, err);
+                continue;
             }
 
-            if (siteApp) {
-                if (domain.startsWith('*.')) {
-                    if (this.disableWildcard) {
-                        log.warn(`⚠️  Wildcard site skipped (disableWildcard enabled): ${domain}`);
-                        continue;
-                    }
-                    // Wildcard site: one handler for all subdomains (e.g. *.example.com)
-                    this.domains.push(domain);
-                    this.sites[domain] = siteApp;
-                    const root = wildcardRoot(domain);
-                    if (root) this.wildcardZones.add(root);
-                    log.info(`(✔) Loaded wildcard site: https://${domain}`);
-                } else {
-                    const domainEntries = [domain, `www.${domain}`];
-                    this.domains.push(...domainEntries);
-                    domainEntries.forEach(d => {
-                        this.sites[d] = siteApp;
-                    });
-                    log.info(`(✔) Loaded site: https://${domain}`);
+            if (!resolved) {
+                log.warn(`⚠️  No index file (js/mjs/cjs or index.html) found in ${domainPath}`);
+                continue;
+            }
+
+            const { siteApp, type } = resolved;
+
+            if (domain.startsWith('*.')) {
+                if (this.disableWildcard) {
+                    log.warn(`⚠️  Wildcard site skipped (disableWildcard enabled): ${domain}`);
+                    continue;
                 }
+                this.domains.push(domain);
+                this.sites[domain] = siteApp;
+                const root = wildcardRoot(domain);
+                if (root) this.wildcardZones.add(root);
+                log.info(`(✔) Loaded wildcard site: https://${domain}${type === 'static' ? ' (static)' : ''}`);
             } else {
-                log.warn(`⚠️  No index file (js/mjs/cjs) found in ${domainPath}`);
+                const domainEntries = [domain, `www.${domain}`];
+                this.domains.push(...domainEntries);
+                domainEntries.forEach(d => {
+                    this.sites[d] = siteApp;
+                });
+                log.info(`(✔) Loaded site: https://${domain}${type === 'static' ? ' (static)' : ''}`);
             }
         }
     }

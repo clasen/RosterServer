@@ -539,6 +539,93 @@ describe('Roster loadSites', () => {
         });
         await assert.doesNotReject(roster.loadSites());
     });
+
+    it('loads static site from www/domain when index.html exists and no index.js', async () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+        const wwwPath = path.join(tmpDir, 'www');
+        const siteDir = path.join(wwwPath, 'static.example');
+        fs.mkdirSync(siteDir, { recursive: true });
+        fs.writeFileSync(path.join(siteDir, 'index.html'), '<html>hello</html>', 'utf8');
+        try {
+            const roster = new Roster({ wwwPath, local: true });
+            await roster.loadSites();
+            assert.ok(roster.sites['static.example']);
+            assert.ok(roster.sites['www.static.example']);
+            const handler = roster.sites['static.example'];
+            assert.strictEqual(typeof handler, 'function');
+            const appHandler = handler(roster.createVirtualServer('static.example'));
+            assert.strictEqual(typeof appHandler, 'function');
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+
+    it('loads index.js over index.html when both exist', async () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+        const wwwPath = path.join(tmpDir, 'www');
+        const siteDir = path.join(wwwPath, 'both.example');
+        fs.mkdirSync(siteDir, { recursive: true });
+        fs.writeFileSync(path.join(siteDir, 'index.html'), '<html>static</html>', 'utf8');
+        fs.writeFileSync(
+            path.join(siteDir, 'index.js'),
+            'module.exports = () => (req, res) => { res.writeHead(200); res.end("js"); };',
+            'utf8'
+        );
+        try {
+            const roster = new Roster({ wwwPath, local: true });
+            await roster.loadSites();
+            const handler = roster.sites['both.example'];
+            const appHandler = handler(roster.createVirtualServer('both.example'));
+            let body = '';
+            const res = { writeHead: () => {}, end: (b) => { body = (b || '').toString(); } };
+            appHandler({ url: '/', method: 'GET' }, res);
+            assert.strictEqual(body, 'js');
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+
+    it('static site serves index.html for / in local mode', async () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+        const wwwPath = path.join(tmpDir, 'www');
+        const siteDir = path.join(wwwPath, 'staticlocal.example');
+        fs.mkdirSync(siteDir, { recursive: true });
+        const html = '<html><body>static ok</body></html>';
+        fs.writeFileSync(path.join(siteDir, 'index.html'), html, 'utf8');
+        const roster = new Roster({ wwwPath, local: true, minLocalPort: 19200, maxLocalPort: 19209 });
+        try {
+            await roster.start();
+            const port = roster.domainPorts['staticlocal.example'];
+            assert.ok(typeof port === 'number');
+            await new Promise((r) => setTimeout(r, 50));
+            const result = await httpGet('localhost', port, '/');
+            assert.strictEqual(result.statusCode, 200);
+            assert.ok(result.body.includes('static ok'));
+        } finally {
+            closePortServers(roster);
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+
+    it('static site returns 404 for non-existent path', async () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+        const wwwPath = path.join(tmpDir, 'www');
+        const siteDir = path.join(wwwPath, 'static404.example');
+        fs.mkdirSync(siteDir, { recursive: true });
+        fs.writeFileSync(path.join(siteDir, 'index.html'), '<html>ok</html>', 'utf8');
+        const roster = new Roster({ wwwPath, local: true, minLocalPort: 19210, maxLocalPort: 19219 });
+        try {
+            await roster.start();
+            const port = roster.domainPorts['static404.example'];
+            assert.ok(typeof port === 'number');
+            await new Promise((r) => setTimeout(r, 50));
+            const result = await httpGet('localhost', port, '/nonexistent.html');
+            assert.strictEqual(result.statusCode, 404);
+        } finally {
+            closePortServers(roster);
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
 });
 
 describe('Roster generateConfigJson', () => {

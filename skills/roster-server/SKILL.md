@@ -1,6 +1,6 @@
 ---
 name: roster-server
-description: Virtual hosting for multiple HTTPS sites with Let's Encrypt SSL automation. Each domain gets isolated VirtualServer instance, supports Express/Socket.IO/custom handlers, local HTTP dev mode with CRC32-based ports, automatic www redirects, and SNI certificate management.
+description: Virtual hosting for multiple HTTPS sites with Let's Encrypt SSL automation. Each domain gets isolated VirtualServer instance, supports Express/Socket.IO/custom handlers, static sites (index.html only, no Node), local HTTP dev mode with CRC32-based ports, automatic www redirects, and SNI certificate management. Static site logic is modular (lib/static-site-handler.js, lib/resolve-site-app.js).
 ---
 
 ## Quick Setup
@@ -42,14 +42,22 @@ project/
 │   │   └── index.js   # Handler for example.com
 │   ├── api.example.com/
 │   │   └── index.js   # Handler for subdomain
+│   ├── static-site.com/   # Static site (no index.js)
+│   │   ├── index.html
+│   │   ├── css/
+│   │   └── images/
 │   └── *.example.com/
 │       └── index.js   # Wildcard: one handler for all subdomains
 └── server.js          # Your setup
 ```
 
+**Site resolution**: For each domain folder, RosterServer looks for `index.js` / `index.mjs` / `index.cjs` first. If none exist but `index.html` exists, it serves the folder as a static site (modular handler in `lib/static-site-handler.js`). Node app takes precedence when both exist.
+
 ## Handler Patterns
 
-Each `www/{domain}/index.js` must export a function that receives `httpsServer` and returns a request handler.
+**Node app**: Each `www/{domain}/index.js` (or `.mjs`/`.cjs`) must export a function that receives `httpsServer` and returns a request handler.
+
+**Static site**: If the domain folder has no index script but has `index.html`, RosterServer serves the folder as static files (`GET /` → `index.html`, other paths → file or 404, path-traversal protected). No code required.
 
 ### Pattern 1: Basic HTTP Handler
 ```javascript
@@ -111,6 +119,9 @@ roster.register('api.example.com:8443', handler);
 roster.register('*.example.com', handler);
 roster.register('*.example.com:8080', handler);
 ```
+
+### Pattern 5: Static Site (no code)
+Place only `index.html` (and assets) in `www/example.com/`. No `index.js` needed. RosterServer serves files with path-traversal protection; `/` → `index.html`, other paths → file or 404. Implemented in `lib/static-site-handler.js` and `lib/resolve-site-app.js`.
 
 ## Key Configuration Options
 
@@ -183,7 +194,7 @@ Each domain gets isolated server instance that simulates `http.Server`:
 
 **Port 443 in use**: Use different port `{ port: 8443 }`  
 **Certificate failed**: Check firewall (ports 80, 443), verify DNS, try `staging: true`  
-**Site not found**: Verify directory name matches domain, check `index.js` exports function  
+**Site not found**: Verify directory name matches domain. For Node: check `index.js` exports function. For static: ensure `index.html` exists (no index script).  
 **Local port conflict**: Adjust `minLocalPort`/`maxLocalPort` range  
 **Socket.IO not working**: Ensure handler checks `io.opts.path` and returns properly
 
@@ -253,7 +264,7 @@ roster.start();
 When implementing RosterServer:
 
 - [ ] Create `www/` directory structure with domain folders
-- [ ] Each domain has `index.js` exporting `(httpsServer) => handler`
+- [ ] Each domain has either `index.js` (or `.mjs`/`.cjs`) exporting `(httpsServer) => handler`, or `index.html` (and assets) for a static site
 - [ ] Configure email for Let's Encrypt notifications
 - [ ] Test with `local: true` first
 - [ ] Test with `staging: true` before production

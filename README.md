@@ -8,6 +8,7 @@ Welcome to **RosterServer**, the ultimate domain host router with automatic HTTP
 
 - **Automatic HTTPS** with Let's Encrypt via Greenlock.
 - **Dynamic Site Loading**: Just drop your Node.js apps in the `www` folder.
+- **Static Sites**: No code? No problem. Drop a folder with `index.html` (and assets) and RosterServer serves it automatically—modular static handler with path-traversal protection and strict 404s.
 - **Virtual Hosting**: Serve multiple domains from a single server.
 - **Automatic Redirects**: Redirect `www` subdomains to the root domain.
 - **Zero Configuration**: Well, almost zero. Just a tiny bit of setup.
@@ -48,11 +49,19 @@ Your project should look something like this:
     │   └── index.js
     ├── subdomain.example.com/
     │   └── index.js
+    ├── static-site.com/        # Static site: no index.js needed
+    │   ├── index.html
+    │   ├── css/
+    │   └── images/
     ├── other-domain.com/
     │   └── index.js
     └── *.example.com/          # Wildcard: one handler for all subdomains (api.example.com, app.example.com, etc.)
         └── index.js
 ```
+
+Each domain folder can have either:
+- **Node app**: `index.js`, `index.mjs`, or `index.cjs` (exporting a request handler).
+- **Static site**: `index.html` (and any assets). If no JS entry exists, RosterServer serves the folder as static files. Node takes precedence when both exist.
 
 ### Wildcard DNS (*.example.com)
 
@@ -107,7 +116,10 @@ server.start();
 
 ### Your Site Handlers
 
-Each domain should have its own folder under `www`, containing an `index.js` that exports a request handler function.
+Each domain has its own folder under `www`. You can use:
+
+- **Node app**: Put `index.js` (or `index.mjs` / `index.cjs`) that exports a request handler function.
+- **Static site**: Put `index.html` and your assets (CSS, JS, images). RosterServer will serve files from that folder. `GET /` serves `index.html`; other paths serve the file if it exists, or 404. Path traversal is blocked. If both an index script and `index.html` exist, the script is used.
 
 ### Examples
 
@@ -203,6 +215,17 @@ And that's it! Your server is now hosting multiple HTTPS-enabled sites. 🎉
 
 ## 🤯 But Wait, There's More!
 
+### Static Sites (index.html)
+
+Domains under `www` that have no `index.js`/`index.mjs`/`index.cjs` but do have `index.html` are served as static sites. The logic lives in `lib/static-site-handler.js` and `lib/resolve-site-app.js`:
+
+- **`GET /`** and **`GET /index.html`** serve `index.html`.
+- Any other path serves the file under the domain folder if it exists; otherwise **404** (strict, no SPA fallback).
+- Path traversal (e.g. `/../`) is rejected with **403**.
+- Content-Type is set from extension (html, css, js, images, fonts, etc.).
+
+No Express or extra dependencies—plain Node. At startup you’ll see `(✔) Loaded site: https://example.com (static)` for these domains.
+
 ### Automatic SSL Certificate Management
 
 RosterServer uses [greenlock-express](https://www.npmjs.com/package/greenlock-express) to automatically obtain and renew SSL certificates from Let's Encrypt. No need to manually manage certificates ever again. Unless you enjoy that sort of thing. 🧐
@@ -213,7 +236,7 @@ All requests to `www.yourdomain.com` are automatically redirected to `yourdomain
 
 ### Dynamic Site Loading
 
-Add a new site? Just drop it into the `www` folder with an `index.js` file, and RosterServer will handle the rest. No need to restart the server. Well, you might need to restart the server. But that's what `nodemon` is for, right? 😅
+Add a new site? Drop it into the `www` folder: either an `index.js` (or `.mjs`/`.cjs`) for a Node app, or an `index.html` (plus assets) for a static site. RosterServer picks the right handler automatically. Restart the server to load new sites—nodemon has your back. 😅
 
 ## ⚙️ Configuration Options 
 
