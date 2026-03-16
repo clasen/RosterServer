@@ -109,6 +109,19 @@ function parseBooleanFlag(value, fallback = false) {
     return fallback;
 }
 
+function normalizeDomainForLocalHost(domain) {
+    return (domain || '').trim().toLowerCase().replace(/^www\./, '');
+}
+
+function localHostForDomain(normalizedDomain) {
+    const normalized = normalizedDomain;
+    if (!normalized) return 'localhost';
+    if (normalized.startsWith('*.')) return '*.localhost';
+    const labels = normalized.split('.').filter(Boolean);
+    if (labels.length > 2) return `${labels.slice(0, -2).join('.')}.localhost`;
+    return 'localhost';
+}
+
 // Virtual Server that completely isolates applications
 class VirtualServer extends EventEmitter {
     constructor(domain) {
@@ -597,7 +610,7 @@ class Roster {
      * @returns {string|null} The URL if domain is registered (exact or wildcard), null otherwise
      */
     getUrl(domain) {
-        const cleanDomain = domain.startsWith('www.') ? domain.slice(4) : domain;
+        const cleanDomain = normalizeDomainForLocalHost(domain);
 
         const exactMatch = this.sites[cleanDomain] || this.sites[`www.${cleanDomain}`];
         const resolved = exactMatch ? { handler: exactMatch, siteKey: cleanDomain } : this.getHandlerAndKeyForHost(cleanDomain);
@@ -606,7 +619,7 @@ class Roster {
         if (this.local) {
             const pattern = resolved.siteKey.split(':')[0];
             if (this.domainPorts && this.domainPorts[pattern] !== undefined) {
-                return `http://localhost:${this.domainPorts[pattern]}`;
+                return `http://${localHostForDomain(cleanDomain)}:${this.domainPorts[pattern]}`;
             }
             return null;
         }
@@ -704,7 +717,8 @@ class Roster {
             });
 
             httpServer.listen(port, 'localhost', () => {
-                log.info(`🌐 ${domain} → http://localhost:${port}`);
+                const cleanDomain = normalizeDomainForLocalHost(domain);
+                log.info(`🌐 ${domain} → http://${localHostForDomain(cleanDomain)}:${port}`);
             });
 
             httpServer.on('error', (error) => {
@@ -778,8 +792,8 @@ class Roster {
                     }
                 }
                 if (!msg || msg === 'undefined') msg = `[${event}] (no details)`;
-                if (eventDomain && !msg.includes(`[domain:${eventDomain}]`)) {
-                    msg = `[domain:${eventDomain}] ${msg}`;
+                if (eventDomain && !msg.includes(`[${eventDomain}]`)) {
+                    msg = `[${eventDomain}] ${msg}`;
                 }
                 // Suppress known benign warnings from ACME when using acme-dns-01-cli
                 if (event === 'warning' && typeof msg === 'string') {

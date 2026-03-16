@@ -309,12 +309,13 @@ await roster.start();
 const url = roster.getUrl('example.com');
 console.log(url); 
 // Local mode: http://localhost:9465
+// Local subdomain: http://api.localhost:9465
 // Production mode: https://example.com
 ```
 
 This method:
 - Returns the correct URL based on your environment (`local: true/false`)
-- In **local mode**: Returns `http://localhost:{port}` with the assigned port
+- In **local mode**: Returns `http://localhost:{port}` for apex domains and `http://{subdomain}.localhost:{port}` for subdomains
 - In **production mode**: Returns `https://{domain}` (or with custom port if configured)
 - Handles `www.` prefix automatically (returns same URL)
 - Returns `null` for domains that aren't registered
@@ -327,9 +328,12 @@ import Roster from 'roster-server';
 // Local development
 const localRoster = new Roster({ local: true });
 localRoster.register('example.com', handler);
+localRoster.register('api.example.com', handler);
 await localRoster.start();
 console.log(localRoster.getUrl('example.com')); 
 // → http://localhost:9465
+console.log(localRoster.getUrl('api.example.com'));
+// → http://api.localhost:7342
 
 // Production
 const prodRoster = new Roster({ local: false });

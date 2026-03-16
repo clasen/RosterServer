@@ -218,7 +218,7 @@ describe('Roster', () => {
             roster.register('*.example.com', () => {});
             roster.domainPorts = { '*.example.com': 9999 };
             roster.local = true;
-            assert.strictEqual(roster.getUrl('api.example.com'), 'http://localhost:9999');
+            assert.strictEqual(roster.getUrl('api.example.com'), 'http://api.localhost:9999');
         });
         it('returns https URL for wildcard-matched host in production', () => {
             const roster = new Roster({ local: false });
@@ -358,6 +358,13 @@ describe('Roster', () => {
             roster.domainPorts = { 'exact.local': 4567 };
             roster.local = true;
             assert.strictEqual(roster.getUrl('exact.local'), 'http://localhost:4567');
+        });
+        it('returns http://subdomain.localhost:PORT in local mode for exact subdomain', () => {
+            const roster = new Roster({ local: true });
+            roster.register('api.example.com', () => {});
+            roster.domainPorts = { 'api.example.com': 5678 };
+            roster.local = true;
+            assert.strictEqual(roster.getUrl('api.example.com'), 'http://api.localhost:5678');
         });
         it('returns https URL in production for registered domain', () => {
             const roster = new Roster({ local: false });
