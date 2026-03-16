@@ -736,6 +736,33 @@ class Roster {
             cluster: this.cluster,
             staging: this.staging,
             notify: (event, details) => {
+                const eventDomain = (() => {
+                    if (!details || typeof details !== 'object') return null;
+
+                    const directKeys = ['subject', 'servername', 'domain', 'hostname', 'host'];
+                    for (const key of directKeys) {
+                        if (typeof details[key] === 'string' && details[key].trim()) {
+                            return details[key].trim().toLowerCase();
+                        }
+                    }
+
+                    if (Array.isArray(details.altnames) && details.altnames.length > 0) {
+                        const alt = details.altnames.find(name => typeof name === 'string' && name.trim());
+                        if (alt) return alt.trim().toLowerCase();
+                    }
+
+                    if (Array.isArray(details.domains) && details.domains.length > 0) {
+                        const domain = details.domains.find(name => typeof name === 'string' && name.trim());
+                        if (domain) return domain.trim().toLowerCase();
+                    }
+
+                    if (details.identifier && typeof details.identifier.value === 'string' && details.identifier.value.trim()) {
+                        return details.identifier.value.trim().toLowerCase();
+                    }
+
+                    return null;
+                })();
+
                 let msg;
                 if (typeof details === 'string') {
                     msg = details;
@@ -751,6 +778,9 @@ class Roster {
                     }
                 }
                 if (!msg || msg === 'undefined') msg = `[${event}] (no details)`;
+                if (eventDomain && !msg.includes(`[domain:${eventDomain}]`)) {
+                    msg = `[domain:${eventDomain}] ${msg}`;
+                }
                 // Suppress known benign warnings from ACME when using acme-dns-01-cli
                 if (event === 'warning' && typeof msg === 'string') {
                     if (/acme-dns-01-cli.*(incorrect function signatures|deprecated use of callbacks)/i.test(msg)) return;
