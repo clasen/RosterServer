@@ -626,6 +626,33 @@ describe('Roster loadSites', () => {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
     });
+
+    it('static site serves index.html for subpath directory (/en/)', async () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+        const wwwPath = path.join(tmpDir, 'www');
+        const siteDir = path.join(wwwPath, 'subpath.example');
+        fs.mkdirSync(siteDir, { recursive: true });
+        fs.writeFileSync(path.join(siteDir, 'index.html'), '<html>root</html>', 'utf8');
+        const enDir = path.join(siteDir, 'en');
+        fs.mkdirSync(enDir, { recursive: true });
+        fs.writeFileSync(path.join(enDir, 'index.html'), '<html><body>en page</body></html>', 'utf8');
+        const roster = new Roster({ wwwPath, local: true, minLocalPort: 19220, maxLocalPort: 19229 });
+        try {
+            await roster.start();
+            const port = roster.domainPorts['subpath.example'];
+            assert.ok(typeof port === 'number');
+            await new Promise((r) => setTimeout(r, 50));
+            const resultSlash = await httpGet('localhost', port, '/en/');
+            assert.strictEqual(resultSlash.statusCode, 200);
+            assert.ok(resultSlash.body.includes('en page'));
+            const resultNoSlash = await httpGet('localhost', port, '/en');
+            assert.strictEqual(resultNoSlash.statusCode, 200);
+            assert.ok(resultNoSlash.body.includes('en page'));
+        } finally {
+            closePortServers(roster);
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
 });
 
 describe('Roster generateConfigJson', () => {
