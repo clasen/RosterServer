@@ -736,7 +736,21 @@ class Roster {
             cluster: this.cluster,
             staging: this.staging,
             notify: (event, details) => {
-                const msg = typeof details === 'string' ? details : (details?.message ?? JSON.stringify(details));
+                let msg;
+                if (typeof details === 'string') {
+                    msg = details;
+                } else if (details instanceof Error) {
+                    msg = details.stack || details.message;
+                } else if (details && typeof details === 'object' && typeof details.message === 'string') {
+                    msg = details.message;
+                } else {
+                    try {
+                        msg = JSON.stringify(details);
+                    } catch {
+                        msg = String(details);
+                    }
+                }
+                if (!msg || msg === 'undefined') msg = `[${event}] (no details)`;
                 // Suppress known benign warnings from ACME when using acme-dns-01-cli
                 if (event === 'warning' && typeof msg === 'string') {
                     if (/acme-dns-01-cli.*(incorrect function signatures|deprecated use of callbacks)/i.test(msg)) return;
