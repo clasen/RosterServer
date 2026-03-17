@@ -384,13 +384,34 @@ G.create = function(gconf) {
             return dir.promise;
         }
 
-        await acme.init(dirUrl).catch(function(err) {
-            log.error(
-                "ACME init failed (directory may be down or directoryUrl wrong):",
-                err.message
-            );
-            throw err;
-        });
+        var maxRetries = 3;
+        var lastErr;
+        for (var attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                await acme.init(dirUrl);
+                lastErr = null;
+                break;
+            } catch (err) {
+                lastErr = err;
+                log.error(
+                    "ACME init attempt " +
+                        attempt +
+                        "/" +
+                        maxRetries +
+                        " failed (directory may be down or directoryUrl wrong):",
+                    err.message
+                );
+                if (attempt < maxRetries) {
+                    await new Promise(function(resolve) {
+                        setTimeout(resolve, 1000 * attempt);
+                    });
+                }
+            }
+        }
+        if (lastErr) {
+            delete caches[dirUrl];
+            throw lastErr;
+        }
 
         caches[dirUrl] = {
             promise: Promise.resolve(acme),
