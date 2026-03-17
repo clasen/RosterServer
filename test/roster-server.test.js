@@ -302,27 +302,13 @@ describe('Roster', () => {
             const roster = new Roster({ local: true, disableWildcard: true });
             assert.strictEqual(roster.disableWildcard, true);
         });
-        it('reads disableWildcard from env var', () => {
-            const previous = process.env.ROSTER_DISABLE_WILDCARD;
-            process.env.ROSTER_DISABLE_WILDCARD = '1';
-            try {
-                const roster = new Roster({ local: true });
-                assert.strictEqual(roster.disableWildcard, true);
-            } finally {
-                if (previous === undefined) delete process.env.ROSTER_DISABLE_WILDCARD;
-                else process.env.ROSTER_DISABLE_WILDCARD = previous;
-            }
+        it('enables disableWildcard from constructor option (truthy string)', () => {
+            const roster = new Roster({ local: true, disableWildcard: '1' });
+            assert.strictEqual(roster.disableWildcard, true);
         });
-        it('enables combined wildcard certs from env var', () => {
-            const previous = process.env.ROSTER_COMBINE_WILDCARD_CERTS;
-            process.env.ROSTER_COMBINE_WILDCARD_CERTS = '1';
-            try {
-                const roster = new Roster({ local: false });
-                assert.strictEqual(roster.combineWildcardCerts, true);
-            } finally {
-                if (previous === undefined) delete process.env.ROSTER_COMBINE_WILDCARD_CERTS;
-                else process.env.ROSTER_COMBINE_WILDCARD_CERTS = previous;
-            }
+        it('enables combined wildcard certs from constructor option', () => {
+            const roster = new Roster({ local: false, combineWildcardCerts: true });
+            assert.strictEqual(roster.combineWildcardCerts, true);
         });
         it('defaults combineWildcardCerts to false', () => {
             const roster = new Roster({ local: false });

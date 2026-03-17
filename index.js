@@ -252,22 +252,19 @@ class Roster {
         this.portServers = {}; // Store servers by port
         this.domainPorts = {}; // Store domain → port mapping for local mode
         this.assignedPorts = new Set(); // Track ports assigned to domains (not OS availability)
-        this.hostname = options.hostname || '0.0.0.0';
+        this.hostname = options.hostname ?? '::';
         this.filename = options.filename || 'index';
         this.minLocalPort = options.minLocalPort || 4000;
         this.maxLocalPort = options.maxLocalPort || 9999;
         this.tlsMinVersion = options.tlsMinVersion ?? 'TLSv1.2';
         this.tlsMaxVersion = options.tlsMaxVersion ?? 'TLSv1.3';
-        this.disableWildcard = options.disableWildcard !== undefined
-            ? parseBooleanFlag(options.disableWildcard, false)
-            : parseBooleanFlag(process.env.ROSTER_DISABLE_WILDCARD, false);
-        const combineDefault = false;
-        this.combineWildcardCerts = options.combineWildcardCerts !== undefined
-            ? parseBooleanFlag(options.combineWildcardCerts, combineDefault)
-            : parseBooleanFlag(process.env.ROSTER_COMBINE_WILDCARD_CERTS, combineDefault);
+        this.disableWildcard = parseBooleanFlag(options.disableWildcard, false);
+        this.combineWildcardCerts = parseBooleanFlag(options.combineWildcardCerts, false);
         if (isBunRuntime && this.combineWildcardCerts) {
             log.info('Bun runtime detected: combined wildcard certificates enabled (SNI bypass)');
         }
+
+        this.skipLocalCheck = parseBooleanFlag(options.skipLocalCheck, true);
 
         const port = options.port === undefined ? 443 : options.port;
         if (port === 80 && !this.local) {
@@ -749,6 +746,8 @@ class Roster {
             maintainerEmail: this.email,
             cluster: this.cluster,
             staging: this.staging,
+            skipDryRun: this.skipLocalCheck,
+            skipChallengeTest: this.skipLocalCheck,
             notify: (event, details) => {
                 const eventDomain = (() => {
                     if (!details || typeof details !== 'object') return null;
