@@ -13,7 +13,7 @@ const roster = new Roster({
     email: 'admin@example.com',
     wwwPath: '/srv/www',
     greenlockStorePath: '/srv/greenlock.d',
-    local: false
+    local: true
 });
 
 roster.start();
@@ -155,36 +155,8 @@ new Roster({
 ### `roster.start()`
 Loads sites, generates SSL config, starts servers. Returns `Promise<void>`.
 
-### `roster.register(domain, handler, options?)`
+### `roster.register(domain, handler)`
 Manually register a domain handler. Domain can include port: `'api.com:8443'`. For wildcards use `'*.example.com'` or `'*.example.com:8080'`.
-
-Optional registration options:
-- `silent: true` suppresses registration logs (useful in clustered workers)
-- `skipDomainBookkeeping: true` avoids `domains[]` side effects when external runtime owns registration/state
-
-### `roster.prepareSites(options?)`
-Builds VirtualServer + app handler wiring without listening. Useful when you need Roster routing internals but your runtime owns `server.listen(...)`.
-
-Options:
-- `targetPort` (optional): only prepare one port, defaults to all registered ports
-
-Returns:
-- `{ sitesByPort }` with `virtualServers` and `appHandlers` per port
-
-### `roster.buildRuntimeRouter(options?)`
-Build a cluster/sticky-runtime-compatible router for externally managed HTTP servers. This API does **not** call `listen()` and does **not** boot Greenlock.
-
-Options:
-- `targetPort` (optional): defaults to `roster.defaultPort`
-- `hostAliases` (optional): object map or callback `(host) => mappedHost`
-- `allowWwwRedirect` (optional, default `true`)
-
-Returns:
-- `attach(server)` binds request + upgrade handlers to an existing server
-- `dispatchRequest(req, res)` pure request dispatcher
-- `dispatchUpgrade(req, socket, head)` pure upgrade dispatcher
-- `portData` routing snapshot
-- `diagnostics` metadata (`targetPort`, hosts, virtual servers)
 
 ### `roster.getUrl(domain)`
 Get environment-aware URL:
@@ -199,12 +171,6 @@ Get environment-aware URL:
 2. Strips `www.` prefix (301 redirect if present)
 3. Looks up domain → Gets `VirtualServer` instance
 4. Routes to handler via `virtualServer.processRequest(req, res)`
-
-### External Runtime Flow (cluster/sticky workers)
-1. Register handlers with `roster.register(...)`
-2. Build router via `roster.buildRuntimeRouter(...)`
-3. Attach to externally created server: `router.attach(server)`
-4. External runtime calls `server.listen(...)`
 
 ### VirtualServer Architecture
 Each domain gets isolated server instance that simulates `http.Server`:
@@ -276,30 +242,6 @@ roster.register('test.local', (server) => {
 roster.start();
 ```
 
-### External Cluster/Sticky Worker
-```javascript
-const http = require('http');
-const Roster = require('roster-server');
-
-const roster = new Roster({ local: false, port: 443 });
-
-roster.register('example.com', (virtualServer) => {
-    return (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('worker response');
-    };
-}, { silent: true });
-
-const server = http.createServer();
-const router = roster.buildRuntimeRouter({
-    targetPort: 443,
-    hostAliases: { localhost: 'example.com' }
-});
-
-router.attach(server);
-server.listen(3000); // owned by external runtime
-```
-
 ### Environment-Aware Configuration
 ```javascript
 const isProduction = process.env.NODE_ENV === 'production';
@@ -332,4 +274,3 @@ When implementing RosterServer:
 - [ ] Use `roster.getUrl(domain)` for environment-aware URLs
 - [ ] Handle Socket.IO paths correctly in returned handler
 - [ ] Implement error handling in handlers
-- [ ] For sticky/cluster runtimes, use `buildRuntimeRouter().attach(server)` instead of `start()`

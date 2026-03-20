@@ -109,19 +109,6 @@ function parseBooleanFlag(value, fallback = false) {
     return fallback;
 }
 
-function normalizeHostInput(value) {
-    if (typeof value === 'string') return value;
-    if (!value || typeof value !== 'object') return '';
-    if (typeof value.servername === 'string') return value.servername;
-    if (typeof value.hostname === 'string') return value.hostname;
-    if (typeof value.subject === 'string') return value.subject;
-    return '';
-}
-
-function hostWithoutPort(value) {
-    return normalizeHostInput(value).split(':')[0].trim().toLowerCase();
-}
-
 function normalizeDomainForLocalHost(domain) {
     return (domain || '').trim().toLowerCase().replace(/^www\./, '');
 }
@@ -562,21 +549,13 @@ class Roster {
         }
     }
 
-    /**
-     * Register a domain handler.
-     * @param {string} domainString Domain, optionally with :port.
-     * @param {(virtualServer: VirtualServer) => Function} requestHandler Site app factory.
-     * @param {{ silent?: boolean, skipDomainBookkeeping?: boolean }} [options]
-     * @returns {Roster}
-     */
-    register(domainString, requestHandler, options = {}) {
+    register(domainString, requestHandler) {
         if (!domainString) {
             throw new Error('Domain is required');
         }
         if (typeof requestHandler !== 'function') {
             throw new Error('requestHandler must be a function');
         }
-        const { silent = false, skipDomainBookkeeping = false } = options || {};
 
         const { domain, port } = this.parseDomainWithPort(domainString);
 
@@ -586,13 +565,11 @@ class Roster {
                 return this;
             }
             const domainKey = port === this.defaultPort ? domain : `${domain}:${port}`;
-            if (!skipDomainBookkeeping) this.domains.push(domain);
+            this.domains.push(domain);
             this.sites[domainKey] = requestHandler;
             const root = wildcardRoot(domain);
             if (root) this.wildcardZones.add(root);
-            if (!silent) {
-                log.info(`(✔) Registered wildcard site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
-            }
+            log.info(`(✔) Registered wildcard site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
             return this;
         }
 
@@ -601,17 +578,13 @@ class Roster {
             domainEntries.push(`www.${domain}`);
         }
 
-        if (!skipDomainBookkeeping) {
-            this.domains.push(...domainEntries);
-        }
+        this.domains.push(...domainEntries);
         domainEntries.forEach(d => {
             const domainKey = port === this.defaultPort ? d : `${d}:${port}`;
             this.sites[domainKey] = requestHandler;
         });
 
-        if (!silent) {
-            log.info(`(✔) Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
-        }
+        log.info(`(✔) Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
         return this;
     }
 
@@ -653,151 +626,6 @@ class Roster {
 
     createVirtualServer(domain) {
         return new VirtualServer(domain);
-    }
-
-    resolveRoutedHost(rawHost, hostAliases) {
-        const normalizedHost = hostWithoutPort(rawHost);
-        if (!normalizedHost) {
-            return {
-                normalizedHost: '',
-                routedHost: '',
-                isWww: false
-            };
-        }
-
-        let aliasedHost = normalizedHost;
-        if (typeof hostAliases === 'function') {
-            const mapped = hostAliases(normalizedHost);
-            if (mapped) aliasedHost = hostWithoutPort(mapped);
-        } else if (hostAliases && typeof hostAliases === 'object') {
-            const mapped = hostAliases[normalizedHost];
-            if (mapped) aliasedHost = hostWithoutPort(mapped);
-        }
-
-        const isWww = aliasedHost.startsWith('www.');
-        return {
-            normalizedHost: aliasedHost,
-            routedHost: isWww ? aliasedHost.slice(4) : aliasedHost,
-            isWww
-        };
-    }
-
-    createPortRequestDispatcher(portData, options = {}) {
-        const {
-            hostAliases,
-            allowWwwRedirect = true
-        } = options;
-
-        return (req, res) => {
-            const { normalizedHost, routedHost, isWww } = this.resolveRoutedHost(req.headers.host || '', hostAliases);
-
-            if (allowWwwRedirect && isWww) {
-                res.writeHead(301, { Location: `https://${routedHost}${req.url}` });
-                res.end();
-                return;
-            }
-
-            const resolved = this.getHandlerForPortData(routedHost, portData);
-            if (!resolved) {
-                res.writeHead(404);
-                res.end('Site not found');
-                return;
-            }
-            const { virtualServer, appHandler } = resolved;
-
-            if (virtualServer && virtualServer.requestListeners.length > 0) {
-                virtualServer.fallbackHandler = appHandler;
-                virtualServer.processRequest(req, res);
-            } else if (appHandler) {
-                appHandler(req, res);
-            } else {
-                res.writeHead(404);
-                res.end('Site not found');
-            }
-        };
-    }
-
-    createPortUpgradeDispatcher(portData, options = {}) {
-        const { hostAliases } = options;
-        return (req, socket, head) => {
-            const { routedHost } = this.resolveRoutedHost(req.headers.host || '', hostAliases);
-            const resolved = this.getHandlerForPortData(routedHost, portData);
-            if (resolved && resolved.virtualServer) {
-                resolved.virtualServer.processUpgrade(req, socket, head);
-            } else {
-                socket.destroy();
-            }
-        };
-    }
-
-    /**
-     * Prepare port-based virtual server/app handler data without listening.
-     * @param {{ targetPort?: number }} [options]
-     * @returns {{ sitesByPort: Record<number, { virtualServers: Record<string, VirtualServer>, appHandlers: Record<string, Function> }> }}
-     */
-    prepareSites(options = {}) {
-        const { targetPort } = options;
-        const sitesByPort = {};
-
-        for (const [hostKey, siteApp] of Object.entries(this.sites)) {
-            if (hostKey.startsWith('www.')) continue;
-
-            const { domain, port } = this.parseDomainWithPort(hostKey);
-            if (targetPort !== undefined && port !== targetPort) continue;
-
-            if (!sitesByPort[port]) {
-                sitesByPort[port] = {
-                    virtualServers: {},
-                    appHandlers: {}
-                };
-            }
-
-            const virtualServer = this.createVirtualServer(domain);
-            sitesByPort[port].virtualServers[domain] = virtualServer;
-            this.domainServers[domain] = virtualServer;
-
-            const appHandler = siteApp(virtualServer);
-            sitesByPort[port].appHandlers[domain] = appHandler;
-            if (!domain.startsWith('*.')) {
-                sitesByPort[port].appHandlers[`www.${domain}`] = appHandler;
-            }
-        }
-
-        return { sitesByPort };
-    }
-
-    /**
-     * Build a router that can be attached to externally managed servers (e.g. sticky-session workers).
-     * This does not call listen() and does not boot Greenlock.
-     * @param {{ targetPort?: number, hostAliases?: Record<string, string>|((host: string) => string|undefined), allowWwwRedirect?: boolean }} [options]
-     * @returns {{ attach: (server: import('http').Server) => import('http').Server, dispatchRequest: Function, dispatchUpgrade: Function, portData: { virtualServers: Record<string, VirtualServer>, appHandlers: Record<string, Function> }, diagnostics: { targetPort: number, hosts: string[], virtualServers: string[] } }}
-     */
-    buildRuntimeRouter(options = {}) {
-        const {
-            targetPort = this.defaultPort,
-            hostAliases,
-            allowWwwRedirect = true
-        } = options;
-        const { sitesByPort } = this.prepareSites({ targetPort });
-        const portData = sitesByPort[targetPort] || { virtualServers: {}, appHandlers: {} };
-        const dispatchRequest = this.createPortRequestDispatcher(portData, { hostAliases, allowWwwRedirect });
-        const dispatchUpgrade = this.createPortUpgradeDispatcher(portData, { hostAliases });
-
-        return {
-            attach: (server) => {
-                server.on('request', dispatchRequest);
-                server.on('upgrade', dispatchUpgrade);
-                return server;
-            },
-            dispatchRequest,
-            dispatchUpgrade,
-            portData,
-            diagnostics: {
-                targetPort,
-                hosts: Object.keys(portData.appHandlers),
-                virtualServers: Object.keys(portData.virtualServers)
-            }
-        };
     }
 
     // Assign port to domain, detecting collisions with already assigned ports
@@ -986,20 +814,100 @@ class Roster {
 
         return greenlock.ready(async glx => {
             const httpServer = glx.httpServer();
-            const { sitesByPort } = this.prepareSites();
+
+            // Group sites by port
+            const sitesByPort = {};
+            for (const [hostKey, siteApp] of Object.entries(this.sites)) {
+                if (!hostKey.startsWith('www.')) {
+                    const { domain, port } = this.parseDomainWithPort(hostKey);
+                    if (!sitesByPort[port]) {
+                        sitesByPort[port] = {
+                            virtualServers: {},
+                            appHandlers: {}
+                        };
+                    }
+
+                    const virtualServer = this.createVirtualServer(domain);
+                    sitesByPort[port].virtualServers[domain] = virtualServer;
+                    this.domainServers[domain] = virtualServer;
+
+                    const appHandler = siteApp(virtualServer);
+                    sitesByPort[port].appHandlers[domain] = appHandler;
+                    if (!domain.startsWith('*.')) {
+                        sitesByPort[port].appHandlers[`www.${domain}`] = appHandler;
+                    }
+                }
+            }
 
             const bunTlsHotReloadHandlers = [];
+
+            // Create dispatcher for each port
+            const createDispatcher = (portData) => {
+                return (req, res) => {
+                    const host = req.headers.host || '';
+
+                    const hostWithoutPort = host.split(':')[0].toLowerCase();
+                    const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
+
+                    if (hostWithoutPort.startsWith('www.')) {
+                        res.writeHead(301, { Location: `https://${domain}${req.url}` });
+                        res.end();
+                        return;
+                    }
+
+                    const resolved = this.getHandlerForPortData(domain, portData);
+                    if (!resolved) {
+                        res.writeHead(404);
+                        res.end('Site not found');
+                        return;
+                    }
+                    const { virtualServer, appHandler } = resolved;
+
+                    if (virtualServer && virtualServer.requestListeners.length > 0) {
+                        virtualServer.fallbackHandler = appHandler;
+                        virtualServer.processRequest(req, res);
+                    } else if (appHandler) {
+                        appHandler(req, res);
+                    } else {
+                        res.writeHead(404);
+                        res.end('Site not found');
+                    }
+                };
+            };
 
             httpServer.listen(80, this.hostname, () => {
                 log.info('HTTP server listening on port 80');
             });
 
+            const createUpgradeHandler = (portData) => {
+                return (req, socket, head) => {
+                    const host = req.headers.host || '';
+                    const hostWithoutPort = host.split(':')[0].toLowerCase();
+                    const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
+
+                    const resolved = this.getHandlerForPortData(domain, portData);
+                    if (resolved && resolved.virtualServer) {
+                        resolved.virtualServer.processUpgrade(req, socket, head);
+                    } else {
+                        socket.destroy();
+                    }
+                };
+            };
+
             // Handle different port types
             for (const [port, portData] of Object.entries(sitesByPort)) {
                 const portNum = parseInt(port);
-                const dispatcher = this.createPortRequestDispatcher(portData);
-                const upgradeHandler = this.createPortUpgradeDispatcher(portData);
+                const dispatcher = createDispatcher(portData);
+                const upgradeHandler = createUpgradeHandler(portData);
                 const greenlockStorePath = this.greenlockStorePath;
+                const normalizeHostInput = (value) => {
+                    if (typeof value === 'string') return value;
+                    if (!value || typeof value !== 'object') return '';
+                    if (typeof value.servername === 'string') return value.servername;
+                    if (typeof value.hostname === 'string') return value.hostname;
+                    if (typeof value.subject === 'string') return value.subject;
+                    return '';
+                };
                 const loadCert = (subjectDir) => {
                     const normalizedSubject = normalizeHostInput(subjectDir).trim().toLowerCase();
                     if (!normalizedSubject) return null;

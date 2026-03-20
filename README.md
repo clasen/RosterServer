@@ -350,62 +350,6 @@ console.log(customRoster.getUrl('api.example.com'));
 // → https://api.example.com:8443
 ```
 
-## 🔀 External Clusters / Sticky Runtimes
-
-If your runtime already owns `server.listen(...)` (for example sticky-session workers in Node cluster, PM2, or custom LB workers), you can still use Roster's domain routing, virtual servers, and Socket.IO-compatible upgrade flow without calling `roster.start()`.
-
-### Ownership Model
-
-- `roster.start()` = Roster-owned HTTP/HTTPS lifecycle (Greenlock, listeners, ports)
-- `roster.buildRuntimeRouter()` = externally-owned server lifecycle (you call `listen`)
-
-### Minimal Worker Example
-
-```javascript
-import http from 'http';
-import Roster from 'roster-server';
-
-const roster = new Roster({ local: false, port: 443 });
-
-roster.register('example.com', (virtualServer) => {
-    return (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('hello from example.com');
-    };
-});
-
-roster.register('*.example.com', (virtualServer) => {
-    // Socket.IO (or raw WS) can bind to virtualServer "upgrade" listeners here.
-    return (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('hello from wildcard');
-    };
-});
-
-const server = http.createServer();
-const router = roster.buildRuntimeRouter({
-    targetPort: 443, // optional, defaults to roster.defaultPort
-    hostAliases: {
-        localhost: 'example.com'
-    }, // optional map, or callback: (host) => mappedHost
-    allowWwwRedirect: true // optional, defaults to true
-});
-
-router.attach(server);
-
-// External runtime controls binding/lifecycle:
-server.listen(3000);
-```
-
-### API Notes
-
-- `roster.prepareSites(options?)`: builds virtual servers + app handlers without listening.
-- `roster.buildRuntimeRouter(options?)` returns:
-  - `attach(server)` to bind `request` + `upgrade`
-  - `dispatchRequest(req, res)` for manual request dispatch
-  - `dispatchUpgrade(req, socket, head)` for manual upgrade dispatch
-  - `portData` + `diagnostics` snapshots for debugging
-
 ## 🧂 A Touch of Magic
 
 You might be thinking, "But setting up HTTPS and virtual hosts is supposed to be complicated and time-consuming!" Well, not anymore. With RosterServer, you can get back to writing code that matters, like defending Earth from alien invaders! 👾👾👾
