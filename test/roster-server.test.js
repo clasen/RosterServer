@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
+const rosterLog = require('lemonlog')('roster');
 const Roster = require('../index.js');
 const {
     wildcardRoot,
@@ -37,6 +38,20 @@ function httpGet(host, port, pathname = '/') {
         req.on('error', reject);
         req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
     });
+}
+
+async function withPatchedInfoLogger(fn) {
+    const originalInfo = rosterLog.info;
+    const messages = [];
+    rosterLog.info = (...args) => {
+        messages.push(args.map((value) => String(value)).join(' '));
+    };
+    try {
+        await fn();
+    } finally {
+        rosterLog.info = originalInfo;
+    }
+    return messages;
 }
 
 describe('wildcardRoot', () => {
@@ -335,6 +350,21 @@ describe('Roster', () => {
             assert.strictEqual(roster.sites['api.example.com'], handler);
             assert.strictEqual(roster.sites['www.api.example.com'], undefined);
         });
+        it('skipDomainBookkeeping avoids domain list side effects', () => {
+            const roster = new Roster({ local: true });
+            const handler = () => {};
+            roster.register('bookkeep.example', handler, { skipDomainBookkeeping: true });
+            assert.strictEqual(roster.sites['bookkeep.example'], handler);
+            assert.strictEqual(roster.sites['www.bookkeep.example'], handler);
+            assert.deepStrictEqual(roster.domains, []);
+        });
+        it('silent register suppresses registration logs', async () => {
+            const roster = new Roster({ local: true });
+            const messages = await withPatchedInfoLogger(async () => {
+                roster.register('silent.example', () => {}, { silent: true });
+            });
+            assert.strictEqual(messages.some((line) => line.includes('Registered site: silent.example')), false);
+        });
     });
 
     describe('getUrl (exact domain)', () => {
@@ -415,6 +445,111 @@ describe('Roster', () => {
     });
 });
 
+describe('Roster buildRuntimeRouter', () => {
+    it('attaches to external HTTP server and dispatches exact + wildcard hosts', async () => {
+        const roster = new Roster({ local: true, hostname: 'localhost' });
+        roster.register('example.com', () => (req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('exact');
+        });
+        roster.register('*.wild.example', () => (req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('wild');
+        });
+
+        const server = http.createServer();
+        const router = roster.buildRuntimeRouter({ targetPort: roster.defaultPort });
+        router.attach(server);
+
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address();
+        try {
+            const exact = await new Promise((resolve, reject) => {
+                const req = http.request({
+                    host: '127.0.0.1',
+                    port,
+                    path: '/',
+                    method: 'GET',
+                    headers: { host: 'example.com' }
+                }, (res) => {
+                    let body = '';
+                    res.on('data', (chunk) => { body += chunk; });
+                    res.on('end', () => resolve({ statusCode: res.statusCode, body }));
+                });
+                req.on('error', reject);
+                req.end();
+            });
+            assert.strictEqual(exact.statusCode, 200);
+            assert.strictEqual(exact.body, 'exact');
+
+            const wildcard = await new Promise((resolve, reject) => {
+                const req = http.request({
+                    host: '127.0.0.1',
+                    port,
+                    path: '/',
+                    method: 'GET',
+                    headers: { host: 'api.wild.example' }
+                }, (res) => {
+                    let body = '';
+                    res.on('data', (chunk) => { body += chunk; });
+                    res.on('end', () => resolve({ statusCode: res.statusCode, body }));
+                });
+                req.on('error', reject);
+                req.end();
+            });
+            assert.strictEqual(wildcard.statusCode, 200);
+            assert.strictEqual(wildcard.body, 'wild');
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    it('dispatchUpgrade reaches virtual server upgrade listeners', () => {
+        const roster = new Roster({ local: true });
+        let upgraded = false;
+        roster.register('sio.example.com', (virtualServer) => {
+            virtualServer.on('upgrade', () => {
+                upgraded = true;
+            });
+            return () => {};
+        });
+
+        const router = roster.buildRuntimeRouter();
+        const socket = {
+            destroyed: false,
+            destroy() {
+                this.destroyed = true;
+            }
+        };
+        router.dispatchUpgrade(
+            { headers: { host: 'sio.example.com' }, url: '/socket.io/' },
+            socket,
+            Buffer.alloc(0)
+        );
+
+        assert.strictEqual(upgraded, true);
+        assert.strictEqual(socket.destroyed, false);
+    });
+
+    it('buildRuntimeRouter itself does not call listen', () => {
+        const roster = new Roster({ local: true });
+        roster.register('nolisten.example', () => () => {});
+
+        let listenCalled = false;
+        const originalListen = http.Server.prototype.listen;
+        http.Server.prototype.listen = function (...args) {
+            listenCalled = true;
+            return originalListen.apply(this, args);
+        };
+        try {
+            roster.buildRuntimeRouter();
+        } finally {
+            http.Server.prototype.listen = originalListen;
+        }
+        assert.strictEqual(listenCalled, false);
+    });
+});
+
 describe('Roster local mode (local: true)', () => {
     it('starts HTTP server and responds for registered domain', async () => {
         const roster = new Roster({
@@ -455,6 +590,21 @@ describe('Roster local mode (local: true)', () => {
             const url = roster.getUrl('geturltest.example');
             assert.ok(url && url.startsWith('http://localhost:'));
             assert.ok(roster.domainPorts['geturltest.example'] !== undefined);
+        } finally {
+            closePortServers(roster);
+        }
+    });
+    it('start local mode keeps subdomain localhost mapping', async () => {
+        const roster = new Roster({
+            local: true,
+            minLocalPort: 19110,
+            maxLocalPort: 19119
+        });
+        roster.register('api.logtest.example', () => () => {});
+        await roster.start();
+        try {
+            const localUrl = roster.getUrl('api.logtest.example');
+            assert.ok(localUrl && localUrl.startsWith('http://api.localhost:'));
         } finally {
             closePortServers(roster);
         }
