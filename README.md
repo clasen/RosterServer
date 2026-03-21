@@ -247,6 +247,8 @@ When creating a new `RosterServer` instance, you can pass the following options:
 - `greenlockStorePath` (string): Directory for Greenlock configuration.
 - `dnsChallenge` (object|false): Optional override for wildcard DNS-01 challenge config. Default is `acme-dns-01-cli` wrapper with `propagationDelay: 120000`, `autoContinue: false`, and `dryRunDelay: 120000`. Manual mode still works, but you can enable automatic Linode DNS API mode by setting `ROSTER_DNS_PROVIDER=linode` and `LINODE_API_KEY`. In automatic mode, Roster creates/removes TXT records itself and still polls public resolvers every 15s before continuing. Set `false` to disable DNS challenge. You can pass `{ module: '...', propagationDelay: 180000 }` to tune DNS wait time (ms). For Greenlock dry-runs (`_greenlock-dryrun-*`), delay defaults to `dryRunDelay` (same as `propagationDelay` unless overridden with `dnsChallenge.dryRunDelay` or env `ROSTER_DNS_DRYRUN_DELAY_MS`). When wildcard sites are present, Roster creates a separate wildcard certificate (`*.example.com`) that uses `dns-01`, while apex/www stay on the regular certificate flow (typically `http-01`), reducing manual TXT records.
 - `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).
+- `autoCertificates` (boolean): Enables automatic certificate issuance and renewal in production lifecycle. **Default: `true`**. Set to `false` only if certificates are managed externally.
+- `certificateRenewIntervalMs` (number): Renewal check interval when `autoCertificates` is enabled (minimum 60s, default 12h).
 - `local` (boolean): Set to `true` to run in local development mode.
 - `minLocalPort` (number): Minimum port for local mode (default: 4000).
 - `maxLocalPort` (number): Maximum port for local mode (default: 9999).
@@ -348,6 +350,117 @@ customRoster.register('api.example.com', handler);
 await customRoster.start();
 console.log(customRoster.getUrl('api.example.com')); 
 // → https://api.example.com:8443
+```
+
+## 🔌 Cluster-Friendly API (init / attach)
+
+RosterServer can coexist with external cluster managers (sticky-session libraries, PM2 cluster, custom master/worker architectures) that already own the TCP socket and distribute connections. Instead of letting Roster create and bind servers, you initialize routing separately and wire it into your own server.
+
+### How It Works
+
+`roster.init()` loads sites, creates VirtualServers, and prepares dispatchers — but creates **no servers** and calls **no `.listen()`**. You then get handler functions to wire into any `http.Server` or `https.Server`.
+
+### Quick Example: Sticky-Session Worker
+
+```javascript
+import https from 'https';
+import Roster from 'roster-server';
+
+const roster = new Roster({
+    email: 'admin@example.com',
+    wwwPath: '/srv/www',
+    greenlockStorePath: '/srv/greenlock.d'
+});
+
+await roster.init();
+
+// Create your own HTTPS server with Roster's SNI + routing
+const server = https.createServer({ SNICallback: roster.sniCallback() });
+roster.attach(server);
+
+// Master passes connections via IPC — worker never calls listen()
+process.on('message', (msg, connection) => {
+    if (msg === 'sticky-session:connection') {
+        server.emit('connection', connection);
+    }
+});
+```
+
+### Production Pattern: Single Certificate Manager + Workers
+
+For robust ACME behavior with cluster runtimes, run a single certificate manager process (primary) and keep workers in serving-only mode. This avoids challenge race conditions while keeping certificate lifecycle automatic.
+
+```javascript
+// primary
+const certManager = new Roster({
+    email: 'admin@example.com',
+    greenlockStorePath: '/srv/greenlock.d',
+    wwwPath: '/srv/www'
+});
+certManager.register('example.com', () => (req, res) => res.end('manager'));
+await certManager.start();                    // enables ACME challenge lifecycle
+await certManager.ensureCertificate('example.com');
+
+// worker
+const workerRoster = new Roster({
+    email: 'admin@example.com',
+    greenlockStorePath: '/srv/greenlock.d',
+    wwwPath: '/srv/www',
+    autoCertificates: false
+});
+workerRoster.register('example.com', () => (req, res) => res.end('worker'));
+await workerRoster.init();
+const server = await workerRoster.createServingHttpsServer({ servername: 'example.com' });
+server.listen(4336);
+```
+
+Reference implementation: `demo/https-cluster-configurable.js`.
+
+### API Reference
+
+#### `roster.init()` → `Promise<Roster>`
+
+Loads sites, generates SSL config (production), creates VirtualServers and initializes handlers. Idempotent — calling it twice is safe. Returns `this` for chaining.
+
+#### `roster.requestHandler(port?)` → `(req, res) => void`
+
+Returns the Host-header dispatch function for a given port (defaults to `defaultPort`). Handles www→non-www redirects, wildcard matching, and VirtualServer dispatch.
+
+#### `roster.upgradeHandler(port?)` → `(req, socket, head) => void`
+
+Returns the WebSocket upgrade dispatcher for a given port. Routes upgrades to the correct VirtualServer.
+
+#### `roster.sniCallback()` → `(servername, callback) => void`
+
+Returns a TLS SNI callback. It resolves certificates from `greenlockStorePath` and, when `autoCertificates` is enabled (default), can issue missing certificates automatically. Not available in local mode.
+
+#### `roster.ensureCertificate(servername)` → `Promise<{ key, cert }>`
+
+Ensures a certificate exists for `servername`. With `autoCertificates` enabled (default), it issues missing certificates automatically and returns PEMs.
+
+#### `roster.loadCertificate(servername)` → `{ key, cert }`
+
+Loads an existing certificate from `greenlockStorePath` without issuing new certificates. Useful for serving-only workers.
+
+#### `roster.createManagedHttpsServer({ servername, port?, ensureCertificate?, tlsOptions? })` → `Promise<https.Server>`
+
+Creates an HTTPS server prewired with default cert, SNI callback, and request/upgrade routing. By default it ensures certificate issuance before returning.
+
+#### `roster.createServingHttpsServer({ servername, port?, tlsOptions? })` → `Promise<https.Server>`
+
+Convenience alias for serving-only workers. Equivalent to `createManagedHttpsServer(..., ensureCertificate: false)`.
+
+#### `roster.attach(server, { port }?)` → `Roster`
+
+Convenience method. Wires `requestHandler` and `upgradeHandler` onto `server.on('request', ...)` and `server.on('upgrade', ...)`. Returns `this` for chaining.
+
+### Standalone Mode (unchanged)
+
+`roster.start()` still works exactly as before — it calls `init()` internally, then creates and binds servers:
+
+```javascript
+const roster = new Roster({ ... });
+await roster.start(); // full standalone mode, no changes needed
 ```
 
 ## 🧂 A Touch of Magic

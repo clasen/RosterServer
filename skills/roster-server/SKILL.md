@@ -123,6 +123,55 @@ roster.register('*.example.com:8080', handler);
 ### Pattern 5: Static Site (no code)
 Place only `index.html` (and assets) in `www/example.com/`. No `index.js` needed. RosterServer serves files with path-traversal protection; `/` → `index.html`, other paths → file or 404. Implemented in `lib/static-site-handler.js` and `lib/resolve-site-app.js`.
 
+### Pattern 6: Cluster-Friendly (external server)
+```javascript
+const https = require('https');
+const Roster = require('roster-server');
+
+const roster = new Roster({
+    email: 'admin@example.com',
+    wwwPath: '/srv/www',
+    greenlockStorePath: '/srv/greenlock.d'
+});
+
+await roster.init();
+
+const server = https.createServer({ SNICallback: roster.sniCallback() });
+roster.attach(server);
+
+// Master passes connections — worker never calls listen()
+process.on('message', (msg, connection) => {
+    if (msg === 'sticky-session:connection') {
+        server.emit('connection', connection);
+    }
+});
+```
+
+### Pattern 7: Cluster Production (single cert manager + workers)
+```javascript
+// PRIMARY: certificate manager (single process)
+const manager = new Roster({
+    email: 'admin@example.com',
+    greenlockStorePath: '/srv/greenlock.d',
+    wwwPath: '/srv/www'
+});
+manager.register('example.com', () => (req, res) => res.end('manager'));
+await manager.start();
+await manager.ensureCertificate('example.com');
+
+// WORKER: serving-only process
+const worker = new Roster({
+    email: 'admin@example.com',
+    greenlockStorePath: '/srv/greenlock.d',
+    wwwPath: '/srv/www',
+    autoCertificates: false
+});
+worker.register('example.com', () => (req, res) => res.end('worker'));
+await worker.init();
+const httpsServer = await worker.createServingHttpsServer({ servername: 'example.com' });
+httpsServer.listen(4336);
+```
+
 ## Key Configuration Options
 
 ```javascript
@@ -137,7 +186,7 @@ new Roster({
     staging: false,                  // true = Let's Encrypt staging
     
     // Server
-    hostname: '0.0.0.0',
+    hostname: '::',
     port: 443,                       // Default HTTPS port (NOT 80!)
     
     // Local mode
@@ -153,7 +202,34 @@ new Roster({
 ## Core API
 
 ### `roster.start()`
-Loads sites, generates SSL config, starts servers. Returns `Promise<void>`.
+Loads sites, generates SSL config, starts servers. Returns `Promise<void>`. Calls `init()` internally.
+
+### `roster.init()`
+Loads sites, creates VirtualServers, prepares dispatchers — but creates **no servers** and calls **no `.listen()`**. Returns `Promise<Roster>`. Idempotent. Use this for cluster-friendly integration where an external manager owns the socket.
+
+### `roster.requestHandler(port?)`
+Returns `(req, res) => void` dispatcher for a port (defaults to `defaultPort`). Requires `init()` first. Handles Host-header routing, www→non-www redirects, wildcard matching.
+
+### `roster.upgradeHandler(port?)`
+Returns `(req, socket, head) => void` for WebSocket upgrade routing. Requires `init()` first.
+
+### `roster.sniCallback()`
+Returns `(servername, callback) => void` TLS SNI callback that resolves certs from `greenlockStorePath`. With `autoCertificates` enabled (default), it can issue missing certs automatically. Production mode only. Requires `init()` first.
+
+### `roster.ensureCertificate(servername)`
+Forces certificate availability for a domain and returns `{ key, cert }`. With `autoCertificates` enabled (default), it issues certs automatically when missing.
+
+### `roster.loadCertificate(servername)`
+Loads existing `{ key, cert }` from `greenlockStorePath` without issuing new certificates.
+
+### `roster.createManagedHttpsServer(options)`
+Creates a pre-wired `https.Server` with default cert, SNI callback, and attached request/upgrade handlers.
+
+### `roster.createServingHttpsServer(options)`
+Serving-only helper for worker processes. Same as `createManagedHttpsServer(..., ensureCertificate: false)`.
+
+### `roster.attach(server, { port }?)`
+Convenience: wires `requestHandler` + `upgradeHandler` onto an external `http.Server` or `https.Server`. Returns `this`. Requires `init()` first.
 
 ### `roster.register(domain, handler)`
 Manually register a domain handler. Domain can include port: `'api.com:8443'`. For wildcards use `'*.example.com'` or `'*.example.com:8080'`.

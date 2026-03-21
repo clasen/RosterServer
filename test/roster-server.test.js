@@ -318,6 +318,14 @@ describe('Roster', () => {
             const roster = new Roster({ local: false, combineWildcardCerts: true });
             assert.strictEqual(roster.combineWildcardCerts, true);
         });
+        it('defaults autoCertificates to true', () => {
+            const roster = new Roster({ local: false });
+            assert.strictEqual(roster.autoCertificates, true);
+        });
+        it('allows disabling autoCertificates explicitly', () => {
+            const roster = new Roster({ local: false, autoCertificates: false });
+            assert.strictEqual(roster.autoCertificates, false);
+        });
     });
 
     describe('register (normal domain)', () => {
@@ -715,6 +723,357 @@ describe('Roster generateConfigJson', () => {
             assert.strictEqual(wildcardSite, undefined);
         } finally {
             fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('Roster init() (cluster-friendly API)', () => {
+    it('initializes without creating or listening on any server', async () => {
+        const roster = new Roster({
+            local: true,
+            minLocalPort: 19300,
+            maxLocalPort: 19309
+        });
+        roster.register('init-test.example', (server) => {
+            return (req, res) => { res.writeHead(200); res.end('ok'); };
+        });
+        await roster.init();
+        assert.strictEqual(roster._initialized, true);
+        assert.strictEqual(Object.keys(roster.portServers).length, 0);
+        assert.ok(roster._sitesByPort[443]);
+        assert.ok(roster.domainServers['init-test.example']);
+    });
+
+    it('is idempotent (calling init twice does not reinitialize)', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('idem.example', () => () => {});
+        await roster.init();
+        const firstSitesByPort = roster._sitesByPort;
+        await roster.init();
+        assert.strictEqual(roster._sitesByPort, firstSitesByPort);
+    });
+
+    it('start() still works after manual init()', async () => {
+        const roster = new Roster({
+            local: true,
+            minLocalPort: 19310,
+            maxLocalPort: 19319
+        });
+        roster.register('after-init.example', (server) => {
+            return (req, res) => { res.writeHead(200); res.end('after-init'); };
+        });
+        await roster.init();
+        await roster.start();
+        try {
+            const port = roster.domainPorts['after-init.example'];
+            assert.ok(typeof port === 'number');
+            await new Promise((r) => setTimeout(r, 50));
+            const result = await httpGet('localhost', port, '/');
+            assert.strictEqual(result.statusCode, 200);
+            assert.strictEqual(result.body, 'after-init');
+        } finally {
+            closePortServers(roster);
+        }
+    });
+});
+
+describe('Roster requestHandler() / upgradeHandler()', () => {
+    it('throws if called before init()', () => {
+        const roster = new Roster({ local: true });
+        assert.throws(() => roster.requestHandler(), /Call init\(\) before/);
+        assert.throws(() => roster.upgradeHandler(), /Call init\(\) before/);
+    });
+
+    it('returns a working request dispatcher after init()', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('handler-test.example', (server) => {
+            return (req, res) => { res.writeHead(200); res.end('dispatched'); };
+        });
+        await roster.init();
+
+        const handler = roster.requestHandler();
+        assert.strictEqual(typeof handler, 'function');
+
+        let statusCode, body;
+        const fakeRes = {
+            writeHead: (s) => { statusCode = s; },
+            end: (b) => { body = b; }
+        };
+        handler({ headers: { host: 'handler-test.example' }, url: '/' }, fakeRes);
+        assert.strictEqual(statusCode, 200);
+        assert.strictEqual(body, 'dispatched');
+    });
+
+    it('returns 404 dispatcher for unregistered port', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('port-test.example', () => () => {});
+        await roster.init();
+
+        const handler = roster.requestHandler(9999);
+        let statusCode;
+        const fakeRes = {
+            writeHead: (s) => { statusCode = s; },
+            end: () => {}
+        };
+        handler({ headers: { host: 'port-test.example' }, url: '/' }, fakeRes);
+        assert.strictEqual(statusCode, 404);
+    });
+
+    it('upgrade handler destroys socket for unknown host', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('upgrade-test.example', () => () => {});
+        await roster.init();
+
+        const handler = roster.upgradeHandler();
+        let destroyed = false;
+        const fakeSocket = { destroy: () => { destroyed = true; } };
+        handler({ headers: { host: 'unknown.example' }, url: '/' }, fakeSocket, Buffer.alloc(0));
+        assert.strictEqual(destroyed, true);
+    });
+
+    it('www redirect uses http:// protocol in local mode', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('redirect.example', (server) => {
+            return (req, res) => { res.writeHead(200); res.end('ok'); };
+        });
+        await roster.init();
+
+        const handler = roster.requestHandler();
+        let location;
+        const fakeRes = {
+            writeHead: (s, headers) => { location = headers?.Location; },
+            end: () => {}
+        };
+        handler({ headers: { host: 'www.redirect.example' }, url: '/path' }, fakeRes);
+        assert.ok(location);
+        assert.ok(location.startsWith('http://'), `Expected http:// redirect, got: ${location}`);
+    });
+
+    it('dispatches correctly for custom registered port via requestHandler(port)', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('api.ported.example:8443', () => {
+            return (req, res) => { res.writeHead(200); res.end('port-8443'); };
+        });
+        await roster.init();
+
+        const handler = roster.requestHandler(8443);
+        let statusCode;
+        let body;
+        const fakeRes = {
+            writeHead: (s) => { statusCode = s; },
+            end: (b) => { body = b; }
+        };
+        handler({ headers: { host: 'api.ported.example' }, url: '/' }, fakeRes);
+        assert.strictEqual(statusCode, 200);
+        assert.strictEqual(body, 'port-8443');
+    });
+
+    it('www redirect uses https:// protocol in production mode', async () => {
+        const roster = new Roster({ local: false });
+        roster.register('redirect-prod.example', () => {
+            return (req, res) => { res.writeHead(200); res.end('ok'); };
+        });
+        await roster.init();
+
+        const handler = roster.requestHandler();
+        let location;
+        const fakeRes = {
+            writeHead: (s, headers) => { location = headers?.Location; },
+            end: () => {}
+        };
+        handler({ headers: { host: 'www.redirect-prod.example' }, url: '/secure' }, fakeRes);
+        assert.ok(location);
+        assert.ok(location.startsWith('https://'), `Expected https:// redirect, got: ${location}`);
+    });
+});
+
+describe('Roster sniCallback()', () => {
+    it('throws if called before init()', () => {
+        const roster = new Roster({ local: false });
+        assert.throws(() => roster.sniCallback(), /Call init\(\) before/);
+    });
+
+    it('throws in local mode (no SNI in HTTP)', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('sni-local.example', () => () => {});
+        await roster.init();
+        assert.throws(() => roster.sniCallback(), /not available in local mode/);
+    });
+
+    it('returns a function after init() in production mode', async () => {
+        const roster = new Roster({ local: false });
+        roster.register('sni-prod.example', () => () => {});
+        await roster.init();
+        const cb = roster.sniCallback();
+        assert.strictEqual(typeof cb, 'function');
+    });
+});
+
+describe('Roster ensureCertificate()', () => {
+    it('throws if called before init()', async () => {
+        const roster = new Roster({ local: false, autoCertificates: true });
+        await assert.rejects(() => roster.ensureCertificate('example.com'), /Call init\(\) before ensureCertificate/);
+    });
+
+    it('throws in local mode', async () => {
+        const roster = new Roster({ local: true, autoCertificates: true });
+        roster.register('local-cert.example', () => () => {});
+        await roster.init();
+        await assert.rejects(() => roster.ensureCertificate('local-cert.example'), /not available in local mode/);
+    });
+
+    it('throws when autoCertificates is disabled and cert is missing', async () => {
+        const roster = new Roster({ local: false, autoCertificates: false });
+        roster.register('missing-cert.example', () => () => {});
+        await roster.init();
+        await assert.rejects(
+            () => roster.ensureCertificate('missing-cert.example'),
+            /autoCertificates is disabled/
+        );
+    });
+});
+
+describe('Roster loadCertificate()', () => {
+    it('throws if called before init()', () => {
+        const roster = new Roster({ local: false });
+        assert.throws(() => roster.loadCertificate('example.com'), /Call init\(\) before loadCertificate/);
+    });
+
+    it('throws in local mode', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('local-load.example', () => () => {});
+        await roster.init();
+        assert.throws(() => roster.loadCertificate('local-load.example'), /not available in local mode/);
+    });
+});
+
+describe('Roster createManagedHttpsServer()', () => {
+    it('throws if called before init()', async () => {
+        const roster = new Roster({ local: false });
+        await assert.rejects(
+            () => roster.createManagedHttpsServer({ servername: 'example.com' }),
+            /Call init\(\) before createManagedHttpsServer/
+        );
+    });
+
+    it('throws in local mode', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('local-managed.example', () => () => {});
+        await roster.init();
+        await assert.rejects(
+            () => roster.createManagedHttpsServer({ servername: 'local-managed.example' }),
+            /not available in local mode/
+        );
+    });
+});
+
+describe('Roster createServingHttpsServer()', () => {
+    it('throws if called before init()', async () => {
+        const roster = new Roster({ local: false });
+        await assert.rejects(
+            () => roster.createServingHttpsServer({ servername: 'example.com' }),
+            /Call init\(\) before createManagedHttpsServer/
+        );
+    });
+
+    it('throws in local mode', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('local-serving.example', () => () => {});
+        await roster.init();
+        await assert.rejects(
+            () => roster.createServingHttpsServer({ servername: 'local-serving.example' }),
+            /not available in local mode/
+        );
+    });
+});
+
+describe('Roster attach()', () => {
+    it('throws if called before init()', () => {
+        const roster = new Roster({ local: true });
+        const fakeServer = { on: () => {} };
+        assert.throws(() => roster.attach(fakeServer), /Call init\(\) before/);
+    });
+
+    it('wires request and upgrade listeners onto external server', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('attach-test.example', (server) => {
+            return (req, res) => { res.writeHead(200); res.end('attached'); };
+        });
+        await roster.init();
+
+        const listeners = {};
+        const fakeServer = {
+            on: (event, fn) => { listeners[event] = fn; }
+        };
+        const result = roster.attach(fakeServer);
+        assert.strictEqual(result, roster);
+        assert.strictEqual(typeof listeners['request'], 'function');
+        assert.strictEqual(typeof listeners['upgrade'], 'function');
+    });
+
+    it('uses provided port option when attaching', async () => {
+        const roster = new Roster({ local: true });
+        roster.register('attach-443.example', () => (req, res) => { res.writeHead(200); res.end('on-443'); });
+        roster.register('attach-9443.example:9443', () => (req, res) => { res.writeHead(200); res.end('on-9443'); });
+        await roster.init();
+
+        const listeners = {};
+        const fakeServer = {
+            on: (event, fn) => { listeners[event] = fn; }
+        };
+        roster.attach(fakeServer, { port: 9443 });
+
+        let statusCode;
+        let body;
+        const fakeRes = {
+            writeHead: (s) => { statusCode = s; },
+            end: (b) => { body = b; }
+        };
+        listeners.request({ headers: { host: 'attach-9443.example' }, url: '/' }, fakeRes);
+        assert.strictEqual(statusCode, 200);
+        assert.strictEqual(body, 'on-9443');
+    });
+
+    it('attached handler dispatches requests correctly', async () => {
+        const roster = new Roster({
+            local: true,
+            minLocalPort: 19400,
+            maxLocalPort: 19409
+        });
+        roster.register('attach-http.example', (server) => {
+            return (req, res) => {
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end('from-attach');
+            };
+        });
+        await roster.init();
+
+        const server = http.createServer();
+        roster.attach(server);
+
+        const port = 19400;
+        await new Promise((resolve, reject) => {
+            server.listen(port, 'localhost', resolve);
+            server.on('error', reject);
+        });
+        try {
+            await new Promise((r) => setTimeout(r, 50));
+            const result = await new Promise((resolve, reject) => {
+                const req = http.get(
+                    { host: 'localhost', port, path: '/', headers: { host: 'attach-http.example' } },
+                    (res) => {
+                        let body = '';
+                        res.on('data', (chunk) => { body += chunk; });
+                        res.on('end', () => resolve({ statusCode: res.statusCode, body }));
+                    }
+                );
+                req.on('error', reject);
+                req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
+            });
+            assert.strictEqual(result.statusCode, 200);
+            assert.strictEqual(result.body, 'from-attach');
+        } finally {
+            server.close();
         }
     });
 });
