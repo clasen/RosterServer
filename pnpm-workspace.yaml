@@ -1,0 +1,2 @@
+allowBuilds:
+  '@root/acme': true
