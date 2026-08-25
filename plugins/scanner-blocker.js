@@ -61,28 +61,36 @@ function rejectRequest(req, res) {
     res.end(req.method === 'HEAD' ? undefined : body);
 }
 
-function createScannerBlocker(options) {
+function createScannerBlocker(options = {}) {
     if (!options || typeof options !== 'object') {
-        throw new Error('scanner-blocker options are required');
+        throw new Error('scanner-blocker options must be an object');
     }
 
-    const windowMs = requirePositiveInteger(options, 'windowMs');
-    const strikeThreshold = requirePositiveInteger(options, 'strikeThreshold');
-    const banDurationMs = requirePositiveInteger(options, 'banDurationMs');
-    const maxTrackedClients = requirePositiveInteger(options, 'maxTrackedClients');
-    if (typeof options.trustProxy !== 'boolean') {
+    const {
+        windowMs = 60_000,
+        strikeThreshold = 3,
+        banDurationMs = 15 * 60_000,
+        maxTrackedClients = 10_000,
+        trustProxy = false,
+        onBlock,
+        now
+    } = options;
+    const normalizedOptions = { windowMs, strikeThreshold, banDurationMs, maxTrackedClients };
+    requirePositiveInteger(normalizedOptions, 'windowMs');
+    requirePositiveInteger(normalizedOptions, 'strikeThreshold');
+    requirePositiveInteger(normalizedOptions, 'banDurationMs');
+    requirePositiveInteger(normalizedOptions, 'maxTrackedClients');
+    if (typeof trustProxy !== 'boolean') {
         throw new Error('trustProxy must be a boolean');
     }
-    if (options.onBlock !== undefined && typeof options.onBlock !== 'function') {
+    if (onBlock !== undefined && typeof onBlock !== 'function') {
         throw new Error('onBlock must be a function');
     }
-    if (options.now !== undefined && typeof options.now !== 'function') {
+    if (now !== undefined && typeof now !== 'function') {
         throw new Error('now must be a function');
     }
 
-    const trustProxy = options.trustProxy;
-    const onBlock = options.onBlock;
-    const now = options.now || Date.now;
+    const clock = now || Date.now;
     const clients = new Map();
 
     function removeExpiredClients(timestamp) {
@@ -109,7 +117,7 @@ function createScannerBlocker(options) {
     }
 
     return function scannerBlocker(req, res, context = {}) {
-        const timestamp = now();
+        const timestamp = clock();
         const ip = clientIp(req, trustProxy);
         let state = ip ? clients.get(ip) : null;
 

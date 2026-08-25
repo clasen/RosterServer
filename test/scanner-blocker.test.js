@@ -40,10 +40,20 @@ function blocker(overrides = {}) {
 }
 
 describe('scanner-blocker plugin', () => {
-    it('requires every operational option explicitly', () => {
-        assert.throws(() => createScannerBlocker(), /options are required/);
-        assert.throws(() => createScannerBlocker({}), /windowMs/);
-        assert.throws(() => blocker({ trustProxy: undefined }), /trustProxy/);
+    it('uses documented defaults and permits individual overrides', () => {
+        const plugin = createScannerBlocker();
+        invoke(plugin, { url: '/wp-login.php' });
+        invoke(plugin, { url: '/xmlrpc.php' });
+        assert.strictEqual(invoke(plugin, { url: '/ordinary' }).handled, false);
+        invoke(plugin, { url: '/install.php' });
+        assert.strictEqual(invoke(plugin, { url: '/ordinary' }).handled, true);
+
+        const overriddenPlugin = createScannerBlocker({ strikeThreshold: 1 });
+        invoke(overriddenPlugin, { url: '/wp-login.php' });
+        assert.strictEqual(invoke(overriddenPlugin, { url: '/ordinary' }).handled, true);
+
+        assert.throws(() => createScannerBlocker(null), /options must be an object/);
+        assert.throws(() => blocker({ trustProxy: 'false' }), /trustProxy/);
         assert.throws(() => blocker({ maxTrackedClients: 0 }), /maxTrackedClients/);
     });
 

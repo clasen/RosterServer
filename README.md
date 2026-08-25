@@ -126,11 +126,6 @@ import { createScannerBlocker } from 'roster-server/plugins/scanner-blocker.js';
 const roster = new Roster(options);
 
 roster.use(createScannerBlocker({
-    windowMs: 60_000,
-    strikeThreshold: 3,
-    banDurationMs: 15 * 60_000,
-    maxTrackedClients: 10_000,
-    trustProxy: false,
     onBlock(event) {
         // Send event to the application's existing logger if desired.
     }
@@ -139,7 +134,7 @@ roster.use(createScannerBlocker({
 roster.start();
 ```
 
-All operational values are required. Keep `trustProxy: false` when RosterServer receives traffic directly. Set it to `true` only when a trusted reverse proxy overwrites `X-Forwarded-For`; otherwise clients can spoof the address used for bans.
+By default, the plugin uses a 60-second strike window, 3 strikes, a 15-minute ban, tracks up to 10,000 clients, and does not trust proxy headers. Pass only the values you need to override. Keep `trustProxy: false` when RosterServer receives traffic directly. Set it to `true` only when a trusted reverse proxy overwrites `X-Forwarded-For`; otherwise clients can spoof the address used for bans.
 
 The in-memory strike and ban state is bounded by `maxTrackedClients`, belongs to one RosterServer process, and is cleared on restart. Use the optional `onBlock(event)` callback to feed a shared firewall or Fail2ban when bans must persist or span multiple workers. Routes such as `/atom` and `/articles/config` are not classified as scanner probes.
 

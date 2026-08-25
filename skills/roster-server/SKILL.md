@@ -178,17 +178,11 @@ const Roster = require('roster-server');
 const { createScannerBlocker } = require('roster-server/plugins/scanner-blocker.js');
 
 const roster = new Roster({ local: true, wwwPath: './www' });
-roster.use(createScannerBlocker({
-    windowMs: 60_000,
-    strikeThreshold: 3,
-    banDurationMs: 15 * 60_000,
-    maxTrackedClients: 10_000,
-    trustProxy: false
-}));
+roster.use(createScannerBlocker());
 roster.start();
 ```
 
-The plugin blocks common PHP, WordPress, repository, and sensitive-file probes before site handlers. All operational values are required. Set `trustProxy: true` only behind a trusted reverse proxy that overwrites `X-Forwarded-For`. Ban state is per process and in memory; use `onBlock` to integrate a shared firewall or Fail2ban.
+The plugin blocks common PHP, WordPress, repository, and sensitive-file probes before site handlers. Defaults are a 60-second window, 3 strikes, a 15-minute ban, 10,000 tracked clients, and `trustProxy: false`; pass only the values to override. Set `trustProxy: true` only behind a trusted reverse proxy that overwrites `X-Forwarded-For`. Ban state is per process and in memory; use `onBlock` to integrate a shared firewall or Fail2ban.
 
 ## Key Configuration Options
 
