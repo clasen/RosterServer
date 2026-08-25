@@ -11,6 +11,7 @@ Welcome to **RosterServer**, the ultimate domain host router with automatic HTTP
 - **Static Sites**: No code? No problem. Drop a folder with `index.html` (and assets) and RosterServer serves it automatically—modular static handler with path-traversal protection and strict 404s.
 - **Virtual Hosting**: Serve multiple domains from a single server.
 - **Automatic Redirects**: Redirect `www` subdomains to the root domain.
+- **Optional Request Plugins**: Run synchronous filters before site handlers, including the bundled scanner blocker.
 - **Zero Configuration**: Well, almost zero. Just a tiny bit of setup.
 - **Bun compatible**: Works with both Node.js and [Bun](https://bun.sh).
 
@@ -113,6 +114,34 @@ const options = {
 const server = new Roster(options);
 server.start();
 ```
+
+### Blocking vulnerability scanners
+
+RosterServer includes an optional request plugin that rejects common PHP, WordPress, repository, and sensitive-file probes before they reach a site handler. Suspicious paths always receive a `404`; after the configured number of strikes, every request from that client is rejected until the ban expires.
+
+```javascript
+import Roster from 'roster-server';
+import { createScannerBlocker } from 'roster-server/plugins/scanner-blocker.js';
+
+const roster = new Roster(options);
+
+roster.use(createScannerBlocker({
+    windowMs: 60_000,
+    strikeThreshold: 3,
+    banDurationMs: 15 * 60_000,
+    maxTrackedClients: 10_000,
+    trustProxy: false,
+    onBlock(event) {
+        // Send event to the application's existing logger if desired.
+    }
+}));
+
+roster.start();
+```
+
+All operational values are required. Keep `trustProxy: false` when RosterServer receives traffic directly. Set it to `true` only when a trusted reverse proxy overwrites `X-Forwarded-For`; otherwise clients can spoof the address used for bans.
+
+The in-memory strike and ban state is bounded by `maxTrackedClients`, belongs to one RosterServer process, and is cleared on restart. Use the optional `onBlock(event)` callback to feed a shared firewall or Fail2ban when bans must persist or span multiple workers. Routes such as `/atom` and `/articles/config` are not classified as scanner probes.
 
 ### Your Site Handlers
 
@@ -425,6 +454,10 @@ Loads sites, generates SSL config (production), creates VirtualServers and initi
 #### `roster.requestHandler(port?)` → `(req, res) => void`
 
 Returns the Host-header dispatch function for a given port (defaults to `defaultPort`). Handles www→non-www redirects, wildcard matching, and VirtualServer dispatch.
+
+#### `roster.use(plugin)` → `Roster`
+
+Registers a synchronous request plugin and returns `this`. Plugins receive `(req, res, { host, domain })`; return `true` after sending a response to stop dispatch, or `false`/`undefined` to continue. Plugins run in registration order before redirects and site handlers.
 
 #### `roster.upgradeHandler(port?)` → `(req, socket, head) => void`
 

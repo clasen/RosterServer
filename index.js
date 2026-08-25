@@ -247,6 +247,7 @@ class Roster {
         this.local = options.local || false;
         this.domains = [];
         this.sites = {};
+        this.plugins = [];
         this.wildcardZones = new Set(); // Root domains that have a wildcard site (e.g. "example.com" for *.example.com)
         this.domainServers = {}; // Store separate servers for each domain
         this.portServers = {}; // Store servers by port
@@ -540,6 +541,11 @@ class Roster {
 
     handleRequest(req, res) {
         const host = req.headers.host || '';
+        const hostWithoutPort = host.split(':')[0];
+        const normalizedHost = hostWithoutPort.toLowerCase();
+        const domain = normalizedHost.startsWith('www.') ? normalizedHost.slice(4) : normalizedHost;
+
+        if (this._runRequestPlugins(req, res, { host: normalizedHost, domain })) return;
 
         if (host.startsWith('www.')) {
             const newHost = host.slice(4);
@@ -548,7 +554,6 @@ class Roster {
             return;
         }
 
-        const hostWithoutPort = host.split(':')[0];
         const siteApp = this.getHandlerForHost(hostWithoutPort);
         if (siteApp) {
             siteApp(req, res);
@@ -595,6 +600,25 @@ class Roster {
 
         log.info(`(✔) Registered site: ${domain}${port !== this.defaultPort ? ':' + port : ''}`);
         return this;
+    }
+
+    use(plugin) {
+        if (typeof plugin !== 'function') {
+            throw new Error('plugin must be a function');
+        }
+        this.plugins.push(plugin);
+        return this;
+    }
+
+    _runRequestPlugins(req, res, context) {
+        for (const plugin of this.plugins) {
+            const handled = plugin(req, res, context);
+            if (handled && typeof handled.then === 'function') {
+                throw new Error('Request plugins must be synchronous');
+            }
+            if (handled === true) return true;
+        }
+        return false;
     }
 
     parseDomainWithPort(domainString) {
@@ -736,6 +760,8 @@ class Roster {
             const host = req.headers.host || '';
             const hostWithoutPort = host.split(':')[0].toLowerCase();
             const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
+
+            if (this._runRequestPlugins(req, res, { host: hostWithoutPort, domain })) return;
 
             if (hostWithoutPort.startsWith('www.')) {
                 const protocol = this.local ? 'http' : 'https';
@@ -1062,6 +1088,8 @@ class Roster {
                 const appHandler = portData.appHandlers[domain];
 
                 const dispatcher = (req, res) => {
+                    const host = (req.headers.host || '').split(':')[0].toLowerCase();
+                    if (this._runRequestPlugins(req, res, { host, domain })) return;
                     virtualServer.fallbackHandler = appHandler;
                     if (virtualServer.requestListeners.length > 0) {
                         virtualServer.processRequest(req, res);

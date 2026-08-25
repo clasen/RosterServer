@@ -7,6 +7,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const Roster = require('../index.js');
+const { createScannerBlocker } = require('../plugins/scanner-blocker.js');
 const {
     wildcardRoot,
     hostMatchesWildcard,
@@ -432,6 +433,13 @@ describe('Roster local mode (local: true)', () => {
             hostname: 'localhost'
         });
         const body = 'local-mode-ok';
+        roster.use(createScannerBlocker({
+            windowMs: 60_000,
+            strikeThreshold: 2,
+            banDurationMs: 300_000,
+            maxTrackedClients: 100,
+            trustProxy: false
+        }));
         roster.register('testlocal.example', (server) => {
             return (req, res) => {
                 res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -446,6 +454,9 @@ describe('Roster local mode (local: true)', () => {
             const result = await httpGet('localhost', port, '/');
             assert.strictEqual(result.statusCode, 200);
             assert.strictEqual(result.body, body);
+            const probe = await httpGet('localhost', port, '/wp-login.php');
+            assert.strictEqual(probe.statusCode, 404);
+            assert.strictEqual(probe.body, 'Not Found');
         } finally {
             closePortServers(roster);
         }

@@ -172,6 +172,24 @@ const httpsServer = await worker.createServingHttpsServer({ servername: 'example
 httpsServer.listen(4336);
 ```
 
+### Pattern 8: Optional Scanner Blocking
+```javascript
+const Roster = require('roster-server');
+const { createScannerBlocker } = require('roster-server/plugins/scanner-blocker.js');
+
+const roster = new Roster({ local: true, wwwPath: './www' });
+roster.use(createScannerBlocker({
+    windowMs: 60_000,
+    strikeThreshold: 3,
+    banDurationMs: 15 * 60_000,
+    maxTrackedClients: 10_000,
+    trustProxy: false
+}));
+roster.start();
+```
+
+The plugin blocks common PHP, WordPress, repository, and sensitive-file probes before site handlers. All operational values are required. Set `trustProxy: true` only behind a trusted reverse proxy that overwrites `X-Forwarded-For`. Ban state is per process and in memory; use `onBlock` to integrate a shared firewall or Fail2ban.
+
 ## Key Configuration Options
 
 ```javascript
@@ -233,6 +251,9 @@ Convenience: wires `requestHandler` + `upgradeHandler` onto an external `http.Se
 
 ### `roster.register(domain, handler)`
 Manually register a domain handler. Domain can include port: `'api.com:8443'`. For wildcards use `'*.example.com'` or `'*.example.com:8080'`.
+
+### `roster.use(plugin)`
+Registers a synchronous request plugin. It receives `(req, res, { host, domain })` and stops dispatch when it returns `true`.
 
 ### `roster.getUrl(domain)`
 Get environment-aware URL:
