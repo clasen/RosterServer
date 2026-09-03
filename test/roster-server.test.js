@@ -513,6 +513,51 @@ describe('Roster local mode (local: true)', () => {
 });
 
 describe('Roster loadSites', () => {
+    it('keeps discovered sites on 443 when the same domain is registered on other ports', async () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+        const wwwPath = path.join(tmpDir, 'www');
+        const siteDir = path.join(wwwPath, 'persist.example.com');
+        fs.mkdirSync(siteDir, { recursive: true });
+        fs.writeFileSync(path.join(siteDir, 'index.html'), '<html>static-443</html>', 'utf8');
+
+        const roster = new Roster({ wwwPath, local: true, port: 8880 });
+        roster.register('persist.example.com', () => (req, res) => {
+            res.writeHead(200);
+            res.end('app-8880');
+        });
+        roster.register('persist.example.com:8882', () => (req, res) => {
+            res.writeHead(200);
+            res.end('socket-8882');
+        });
+
+        try {
+            await roster.init();
+
+            const dispatch = (port) => {
+                let statusCode;
+                let body = '';
+                const res = {
+                    writeHead: (status) => { statusCode = status; },
+                    end: (value) => { body = value ? value.toString() : ''; }
+                };
+                roster.requestHandler(port)(
+                    { headers: { host: 'persist.example.com' }, method: 'GET', url: '/' },
+                    res
+                );
+                return { statusCode, body };
+            };
+
+            assert.deepStrictEqual(dispatch(443), {
+                statusCode: 200,
+                body: '<html>static-443</html>'
+            });
+            assert.deepStrictEqual(dispatch(8880), { statusCode: 200, body: 'app-8880' });
+            assert.deepStrictEqual(dispatch(8882), { statusCode: 200, body: 'socket-8882' });
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+
     it('loads site from www directory and registers domain + www', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
         const wwwPath = path.join(tmpDir, 'www');

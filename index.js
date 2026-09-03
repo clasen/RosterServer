@@ -322,6 +322,7 @@ class Roster {
             return;
         }
 
+        const siteKeyForDomain = (domain) => this.defaultPort === 443 ? domain : `${domain}:443`;
         const sites = fs.readdirSync(this.wwwPath, { withFileTypes: true })
             .filter(dirent => dirent.isDirectory());
 
@@ -350,7 +351,7 @@ class Roster {
                     continue;
                 }
                 this.domains.push(domain);
-                this.sites[domain] = siteApp;
+                this.sites[siteKeyForDomain(domain)] = siteApp;
                 const root = wildcardRoot(domain);
                 if (root) this.wildcardZones.add(root);
                 log.info(`(✔) Loaded wildcard site: https://${domain}${type === 'static' ? ' (static)' : ''}`);
@@ -358,7 +359,7 @@ class Roster {
                 const domainEntries = [domain, `www.${domain}`];
                 this.domains.push(...domainEntries);
                 domainEntries.forEach(d => {
-                    this.sites[d] = siteApp;
+                    this.sites[siteKeyForDomain(d)] = siteApp;
                 });
                 log.info(`(✔) Loaded site: https://${domain}${type === 'static' ? ' (static)' : ''}`);
             }
