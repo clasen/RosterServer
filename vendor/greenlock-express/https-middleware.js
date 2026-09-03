@@ -20,6 +20,7 @@ SanitizeHost.create = function(gl, app) {
         var hostname = HttpMiddleware.getHostname(req);
         // Replace the hostname, and get the safe version
         var safehost = HttpMiddleware.sanitizeHostname(req);
+        var normalizedHostname = hostname.toLowerCase().replace(/:\d+$/, "");
 
         // if no hostname, move along
         if (!hostname) {
@@ -28,7 +29,7 @@ SanitizeHost.create = function(gl, app) {
         }
 
         // if there were unallowed characters, complain
-        if (safehost.length !== hostname.length) {
+        if (safehost !== normalizedHostname) {
             res.statusCode = 400;
             res.end("Malformed HTTP Header: 'Host: " + hostname + "'");
             return;

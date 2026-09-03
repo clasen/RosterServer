@@ -1,6 +1,6 @@
 {
     "name": "roster-server",
-    "version": "2.4.10",
+    "version": "2.4.11",
     "description": "👾 RosterServer - A domain host router to host multiple HTTPS.",
     "main": "index.js",
     "scripts": {
@@ -39,6 +39,7 @@
         "@greenlock/manager": "^3.1.0",
         "@root/acme": "^3.1.0",
         "@root/csr": "^0.8.1",
+        "@root/encoding": "^1.0.1",
         "@root/keypairs": "^0.10.0",
         "@root/mkdirp": "^1.0.0",
         "@root/request": "^1.6.1",

@@ -61,9 +61,11 @@ describe('scanner-blocker plugin', () => {
         const urls = [
             '/install.php',
             '/user-new\\.php',
+            '/wp-login.php',
             '/wp-json',
             '/.git/config',
-            '/%252eenv'
+            '/%252eenv',
+            '/security.txt'
         ];
 
         for (const [index, url] of urls.entries()) {

@@ -8,6 +8,7 @@ const http = require('http');
 const os = require('os');
 const Roster = require('../index.js');
 const { createScannerBlocker } = require('../plugins/scanner-blocker.js');
+const HttpsMiddleware = require('../vendor/greenlock-express/https-middleware.js');
 const {
     wildcardRoot,
     hostMatchesWildcard,
@@ -39,6 +40,37 @@ function httpGet(host, port, pathname = '/') {
         req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
     });
 }
+
+describe('vendored HTTPS hostname middleware', () => {
+    function invoke(host) {
+        let appCalled = false;
+        let body;
+        const req = { headers: { host }, socket: {} };
+        const res = {
+            end(value) {
+                body = value;
+            }
+        };
+        HttpsMiddleware.create({}, () => {
+            appCalled = true;
+        })(req, res);
+        return { appCalled, body, req, res };
+    }
+
+    it('accepts a valid Host header with a numeric port', () => {
+        const result = invoke('example.com:8880');
+        assert.strictEqual(result.appCalled, true);
+        assert.strictEqual(result.res.statusCode, undefined);
+        assert.strictEqual(result.req.headers.host, 'example.com');
+    });
+
+    it('rejects a Host header with a non-numeric port', () => {
+        const result = invoke('example.com:invalid');
+        assert.strictEqual(result.appCalled, false);
+        assert.strictEqual(result.res.statusCode, 400);
+        assert.match(result.body, /Malformed HTTP Header/);
+    });
+});
 
 describe('wildcardRoot', () => {
     it('returns root domain for *.example.com', () => {

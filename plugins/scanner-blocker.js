@@ -2,7 +2,7 @@
 
 const PHP_PATH = /(?:^|\/)[^/]*\.php(?:$|\/)/i;
 const SCANNER_PATH = /(?:^|\/)(?:\.git|\.hg|\.svn|\.ssh|\.aws|cgi-bin|server-status|vendor\/phpunit|wp-admin|wp-content|wp-includes|wp-json)(?:\/|$)/i;
-const SCANNER_FILE = /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.htaccess|composer\.(?:json|lock)|web\.config)(?:\/|$)/i;
+const SCANNER_FILE = /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.htaccess|composer\.(?:json|lock)|security\.txt|web\.config)(?:\/|$)/i;
 
 function requirePositiveInteger(options, name) {
     const value = options[name];
