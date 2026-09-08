@@ -149,7 +149,18 @@ Register `virtualServer.onClose(fn)` in a factory for timers, databases, queues,
 
 `closeTimeoutMs` (default `30000`) bounds the whole operation. At the deadline Roster destroys remaining owned connections and active routed responses, attempts cleanup hooks, and rejects with a timeout. It cannot forcibly interrupt an application Promise or an ACME operation already in progress.
 
-Closing is **idempotent and terminal**: repeated calls return the same Promise. Create a new instance after closure or failed initialization/startup. Roster does not install process signal handlers; connect shutdown to the application's lifecycle:
+Closing is **idempotent and terminal**: repeated calls return the same Promise. Create a new instance after closure or failed initialization/startup.
+
+For automatic shutdown on `SIGINT` or `SIGTERM`, explicitly enable `handleSignals`:
+
+```javascript
+const roster = new Roster({ handleSignals: true });
+await roster.start();
+```
+
+The option defaults to `false`. Listeners are installed once when `init()` or `start()` begins and removed when closure completes, including failed startup or cleanup. Signals call `roster.close()`; repeated signals during closure do not repeat cleanup. Existing application signal listeners remain installed. Shutdown failures are logged and set `process.exitCode = 1`.
+
+Roster does not force process termination or close caller-owned servers. The process exits naturally when its remaining work finishes; other resources or cluster workers still require application coordination. If the application already coordinates shutdown, leave `handleSignals` disabled and connect Roster to that flow:
 
 ```javascript
 async function shutdown() {
@@ -233,6 +244,7 @@ Pass operational settings through the constructor, using the consuming applicati
 | `autoCertificates` | `true` | Certificate runtime during `init()`; disable for serving-only workers. |
 | `certificateRenewIntervalMs` | `43200000` (12h) | Roster renewal check interval; minimum `60000`. |
 | `closeTimeoutMs` | `30000` | Positive finite total shutdown deadline. |
+| `handleSignals` | `false` | Close this instance on `SIGINT`/`SIGTERM`; does not force process exit. |
 | `tlsMinVersion`, `tlsMaxVersion` | `TLSv1.2`, `TLSv1.3` | Protocol limits for created HTTPS servers. |
 | `skipLocalCheck` | `true` | Skips Greenlock dry-run/local challenge checks. |
 | `dnsChallenge` | CLI wrapper | DNS-01 options or `false`; see [certificates](#certificates-and-dns). |

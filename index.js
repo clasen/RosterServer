@@ -9,6 +9,7 @@ const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
 const { resolveSiteApp } = require('./lib/resolve-site-app.js');
 const log = require('lemonlog')('roster');
+const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'];
 
 function requestError(error, res) {
     log.error('Request handler failed:', error?.message || error);
@@ -287,6 +288,8 @@ class Roster {
         this._initPromise = null;
         this._startPromise = null;
         this._closePromise = null;
+        this.handleSignals = parseBooleanFlag(options.handleSignals, false);
+        this._signalHandler = null;
         this._ownedServers = new Set();
         this._sockets = new Set();
         this._upgradedSockets = new Set();
@@ -1097,6 +1100,16 @@ class Roster {
     init() {
         if (this._closing) return Promise.reject(new Error('Roster is closing or closed'));
         if (this._initPromise) return this._initPromise;
+        if (this.handleSignals) {
+            this._signalHandler = () => {
+                if (this._closing) return;
+                this.close().catch(error => {
+                    log.error('Signal shutdown failed:', error.message);
+                    process.exitCode = 1;
+                });
+            };
+            for (const signal of SHUTDOWN_SIGNALS) process.on(signal, this._signalHandler);
+        }
         this._initTask = this._initialize();
         this._initPromise = this._initTask.catch(async error => {
             if (!this._closing) {
@@ -1260,6 +1273,10 @@ class Roster {
             }));
         } finally {
             clearTimeout(timer);
+            if (this._signalHandler) {
+                for (const signal of SHUTDOWN_SIGNALS) process.removeListener(signal, this._signalHandler);
+                this._signalHandler = null;
+            }
             for (const [server, handlers] of this._attachments) {
                 server.removeListener('request', handlers.request);
                 server.removeListener('upgrade', handlers.upgrade);

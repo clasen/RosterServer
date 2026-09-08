@@ -56,7 +56,7 @@ A virtual request listener owns its request even before it ends the response. Ro
 
 ## Shutdown
 
-- Connect `await roster.close()` to the application's existing shutdown flow. Roster does not install signal handlers or terminate processes.
+- Connect `await roster.close()` to the application's existing shutdown flow, or explicitly set `handleSignals: true` for automatic `SIGINT`/`SIGTERM` cleanup. It defaults to `false`; listeners are installed during `init()`/`start()` and removed after closure, including failure. Repeated signals during closure do not repeat hooks. Existing signal listeners are preserved; shutdown errors are logged and set `process.exitCode = 1`. Roster never forces process termination.
 - Register `virtualServer.onClose(fn)` for each site's timers, databases, and other resources. Return/await its cleanup Promise; wrap callback APIs when needed.
 - Roster signals virtual `close` at shutdown start to release integrations such as long polling, closes routed WebSockets, drains HTTP, then runs cleanup hooks concurrently. Put dependent cleanup steps in one hook.
 - Hooks run once. Failures are aggregated after other hooks are attempted. `closeTimeoutMs` bounds the complete operation; timeout cannot cancel arbitrary user Promises or in-flight ACME work.
