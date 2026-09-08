@@ -10,6 +10,29 @@ const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
 const { resolveSiteApp } = require('./lib/resolve-site-app.js');
 const log = require('lemonlog')('roster');
 
+function requestError(error, res) {
+    log.error('Request handler failed:', error?.message || error);
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) {
+        res.destroy(error);
+        return;
+    }
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Internal Server Error');
+}
+
+function invokeRequest(handler, req, res) {
+    try {
+        const result = handler(req, res);
+        if (result && typeof result.then === 'function') {
+            return Promise.resolve(result).catch(error => requestError(error, res));
+        }
+        return result;
+    } catch (error) {
+        requestError(error, res);
+    }
+}
+
 const isBunRuntime = typeof Bun !== 'undefined' || (typeof process !== 'undefined' && process.release?.name === 'bun');
 
 // CRC32 implementation for deterministic port assignment
@@ -129,6 +152,8 @@ class VirtualServer extends EventEmitter {
         this.domain = domain;
         this.requestListeners = [];
         this.upgradeListeners = [];
+        this._closeHooks = [];
+        this._closed = false;
 
         // Simulate http.Server properties
         this.listening = false;
@@ -156,6 +181,7 @@ class VirtualServer extends EventEmitter {
     // Socket.IO compatibility methods
     listeners(event) {
         if (event === 'request') {
+            if (this.requestListeners.length === 0 && this.fallbackHandler) return [this.fallbackHandler];
             return this.requestListeners.slice();
         } else if (event === 'upgrade') {
             return this.upgradeListeners.slice();
@@ -179,9 +205,10 @@ class VirtualServer extends EventEmitter {
     }
 
     removeAllListeners(event) {
-        if (event === 'request') {
+        if (event === undefined || event === 'request') {
             this.requestListeners = [];
-        } else if (event === 'upgrade') {
+        }
+        if (event === undefined || event === 'upgrade') {
             this.upgradeListeners = [];
         }
         return super.removeAllListeners(event);
@@ -189,34 +216,34 @@ class VirtualServer extends EventEmitter {
 
     // Simulate other http.Server methods
     listen() { this.listening = true; return this; }
-    close() { this.listening = false; return this; }
+    close(callback) {
+        this.listening = false;
+        if (!this._closed) {
+            this._closed = true;
+            this.emit('close');
+        }
+        if (callback) process.nextTick(callback);
+        return this;
+    }
+    onClose(handler) {
+        if (typeof handler !== 'function') throw new TypeError('Close hook must be a function');
+        if (this._closed) throw new Error('Virtual server is closed');
+        this._closeHooks.push(handler);
+        return this;
+    }
     setTimeout() { return this; }
 
     // Process request with this virtual server's listeners
     processRequest(req, res) {
-        let handled = false;
-
-        // Track if response was handled
-        const originalEnd = res.end;
-        res.end = function (...args) {
-            handled = true;
-            return originalEnd.apply(this, args);
-        };
-
-        // Try all listeners
-        for (const listener of this.requestListeners) {
-            if (!handled) {
-                listener(req, res);
+        const listeners = this.requestListeners.slice();
+        if (listeners.length > 0) {
+            for (const listener of listeners) {
+                if (res.writableEnded || res.destroyed) break;
+                invokeRequest(listener.bind(this), req, res);
             }
-        }
-
-        // Restore original end method
-        res.end = originalEnd;
-
-        // If no listener handled the request, try fallback handler
-        if (!handled && this.fallbackHandler) {
-            this.fallbackHandler(req, res);
-        } else if (!handled) {
+        } else if (this.fallbackHandler) {
+            return invokeRequest(this.fallbackHandler, req, res);
+        } else {
             res.writeHead(404);
             res.end('No handler found');
         }
@@ -255,6 +282,25 @@ class Roster {
         this.assignedPorts = new Set(); // Track ports assigned to domains (not OS availability)
         this._sitesByPort = {};
         this._initialized = false;
+        this._closing = false;
+        this._initTask = null;
+        this._initPromise = null;
+        this._startPromise = null;
+        this._closePromise = null;
+        this._ownedServers = new Set();
+        this._sockets = new Set();
+        this._upgradedSockets = new Set();
+        this._responses = new Set();
+        this._attachments = new Map();
+        this._retryTimers = new Set();
+        this._pendingListens = new Set();
+        this._certificateChecks = new Map();
+        this._secureContexts = new Map();
+        this._contextLoads = new Map();
+        this.closeTimeoutMs = options.closeTimeoutMs ?? 30000;
+        if (!Number.isFinite(this.closeTimeoutMs) || this.closeTimeoutMs <= 0) {
+            throw new TypeError('closeTimeoutMs must be a positive finite number');
+        }
         this._sniCallback = null;
         this.hostname = options.hostname ?? '::';
         this.filename = options.filename || 'index';
@@ -327,6 +373,7 @@ class Roster {
             .filter(dirent => dirent.isDirectory());
 
         for (const dirent of sites) {
+            this._assertOpen();
             const domain = dirent.name;
             const domainPath = path.join(this.wwwPath, domain);
 
@@ -342,6 +389,8 @@ class Roster {
                 log.warn(`⚠️  No index file (js/mjs/cjs or index.html) found in ${domainPath}`);
                 continue;
             }
+
+            this._assertOpen();
 
             const { siteApp, type } = resolved;
 
@@ -528,7 +577,7 @@ class Roster {
     getHandlerForPortData(host, portData) {
         const virtualServer = portData.virtualServers[host];
         const appHandler = portData.appHandlers[host];
-        if (virtualServer && appHandler !== undefined) return { virtualServer, appHandler };
+        if (Object.hasOwn(portData.virtualServers, host)) return { virtualServer, appHandler };
         for (const key of Object.keys(portData.appHandlers)) {
             if (key.startsWith('*.') && hostMatchesWildcard(host, key)) {
                 return {
@@ -541,6 +590,7 @@ class Roster {
     }
 
     handleRequest(req, res) {
+        if (!this._beginRequest(res)) return;
         const host = req.headers.host || '';
         const hostWithoutPort = host.split(':')[0];
         const normalizedHost = hostWithoutPort.toLowerCase();
@@ -557,7 +607,7 @@ class Roster {
 
         const siteApp = this.getHandlerForHost(hostWithoutPort);
         if (siteApp) {
-            siteApp(req, res);
+            return invokeRequest(siteApp, req, res);
         } else {
             res.writeHead(404);
             res.end('Site not found');
@@ -565,6 +615,7 @@ class Roster {
     }
 
     register(domainString, requestHandler) {
+        this._assertOpen();
         if (!domainString) {
             throw new Error('Domain is required');
         }
@@ -604,6 +655,7 @@ class Roster {
     }
 
     use(plugin) {
+        this._assertOpen();
         if (typeof plugin !== 'function') {
             throw new Error('plugin must be a function');
         }
@@ -612,14 +664,20 @@ class Roster {
     }
 
     _runRequestPlugins(req, res, context) {
-        for (const plugin of this.plugins) {
-            const handled = plugin(req, res, context);
-            if (handled && typeof handled.then === 'function') {
-                throw new Error('Request plugins must be synchronous');
+        try {
+            for (const plugin of this.plugins) {
+                const handled = plugin(req, res, context);
+                if (handled && typeof handled.then === 'function') {
+                    Promise.resolve(handled).catch(() => {});
+                    throw new Error('Request plugins must be synchronous');
+                }
+                if (handled === true) return true;
             }
-            if (handled === true) return true;
+            return false;
+        } catch (error) {
+            requestError(error, res);
+            return true;
         }
-        return false;
     }
 
     parseDomainWithPort(domainString) {
@@ -664,6 +722,9 @@ class Roster {
 
     // Assign port to domain, detecting collisions with already assigned ports
     assignPortToDomain(domain) {
+        if (this.assignedPorts.size >= this.maxLocalPort - this.minLocalPort + 1) {
+            throw new Error('Local port range is exhausted');
+        }
         let port = domainToPort(domain, this.minLocalPort, this.maxLocalPort);
 
         // If port is already assigned to another domain, increment until we find a free one
@@ -735,6 +796,7 @@ class Roster {
     _initSiteHandlers() {
         this._sitesByPort = {};
         for (const [hostKey, siteApp] of Object.entries(this.sites)) {
+            this._assertOpen();
             if (hostKey.startsWith('www.')) continue;
             const { domain, port } = this.parseDomainWithPort(hostKey);
             if (!this._sitesByPort[port]) {
@@ -748,7 +810,13 @@ class Roster {
             this._sitesByPort[port].virtualServers[domain] = virtualServer;
             this.domainServers[domain] = virtualServer;
 
-            const appHandler = siteApp(virtualServer);
+            let appHandler;
+            virtualServer.fallbackHandler = (req, res) => {
+                if (appHandler) return appHandler(req, res);
+                res.writeHead(404);
+                res.end('Site not found');
+            };
+            appHandler = siteApp(virtualServer);
             this._sitesByPort[port].appHandlers[domain] = appHandler;
             if (!domain.startsWith('*.')) {
                 this._sitesByPort[port].appHandlers[`www.${domain}`] = appHandler;
@@ -758,6 +826,7 @@ class Roster {
 
     _createDispatcher(portData) {
         return (req, res) => {
+            if (!this._beginRequest(res)) return;
             const host = req.headers.host || '';
             const hostWithoutPort = host.split(':')[0].toLowerCase();
             const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
@@ -766,7 +835,7 @@ class Roster {
 
             if (hostWithoutPort.startsWith('www.')) {
                 const protocol = this.local ? 'http' : 'https';
-                res.writeHead(301, { Location: `${protocol}://${domain}${req.url}` });
+                res.writeHead(301, { Location: `${protocol}://${host.toLowerCase().slice(4)}${req.url}` });
                 res.end();
                 return;
             }
@@ -780,10 +849,9 @@ class Roster {
             const { virtualServer, appHandler } = resolved;
 
             if (virtualServer && virtualServer.requestListeners.length > 0) {
-                virtualServer.fallbackHandler = appHandler;
                 virtualServer.processRequest(req, res);
             } else if (appHandler) {
-                appHandler(req, res);
+                return invokeRequest(appHandler, req, res);
             } else {
                 res.writeHead(404);
                 res.end('Site not found');
@@ -791,8 +859,16 @@ class Roster {
         };
     }
 
+    _trackUpgrade(socket) {
+        if (typeof socket.once !== 'function') return;
+        this._upgradedSockets.add(socket);
+        socket.once('close', () => this._upgradedSockets.delete(socket));
+    }
+
     _createUpgradeHandler(portData) {
         return (req, socket, head) => {
+            if (this._closing) { socket.destroy(); return; }
+            this._trackUpgrade(socket);
             const host = req.headers.host || '';
             const hostWithoutPort = host.split(':')[0].toLowerCase();
             const domain = hostWithoutPort.startsWith('www.') ? hostWithoutPort.slice(4) : hostWithoutPort;
@@ -806,38 +882,69 @@ class Roster {
         };
     }
 
+    async _resolveSecureContext(servername) {
+        this._assertOpen();
+        const host = this._normalizeHostInput(servername).trim().toLowerCase();
+        for (const subject of buildCertLookupCandidates(host)) {
+            let pending = this._contextLoads.get(subject);
+            if (!pending) {
+                pending = this._loadSecureContext(subject).finally(() => this._contextLoads.delete(subject));
+                this._contextLoads.set(subject, pending);
+            }
+            const context = await pending;
+            if (context) return context;
+        }
+        return null;
+    }
+
+    async _loadSecureContext(subject) {
+        const directory = path.join(this.greenlockStorePath, 'live', subject);
+        const files = ['privkey.pem', 'cert.pem', 'chain.pem'].map(name => path.join(directory, name));
+        let stats;
+        try {
+            stats = await Promise.all(files.map(file => fs.promises.stat(file, { bigint: true })));
+        } catch (error) {
+            if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+            this._secureContexts.delete(subject);
+            return null;
+        }
+        this._assertOpen();
+        const version = stats.map(stat => `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join('|');
+        const cached = this._secureContexts.get(subject);
+        if (cached && cached.version === version) return cached.context;
+        const [key, cert, chain] = await Promise.all(files.map(file => fs.promises.readFile(file, 'utf8')));
+        this._assertOpen();
+        const context = tls.createSecureContext({ key, cert: cert + chain });
+        this._secureContexts.set(subject, { version, context });
+        return context;
+    }
+
+    _checkCertificate(servername) {
+        this._assertOpen();
+        if (!this._certificateChecks.has(servername)) {
+            const pending = Promise.resolve().then(() => {
+                this._assertOpen();
+                return this._greenlockRuntime.get({ servername });
+            }).finally(() => this._certificateChecks.delete(servername));
+            this._certificateChecks.set(servername, pending);
+        }
+        return this._certificateChecks.get(servername);
+    }
+
+    async _getSecureContext(servername, issue = true) {
+        const host = this._normalizeHostInput(servername).trim().toLowerCase();
+        let context = await this._resolveSecureContext(host);
+        if (!context && issue && this._greenlockRuntime && host) {
+            await this._checkCertificate(host);
+            context = await this._resolveSecureContext(host);
+        }
+        if (!context) throw new Error(`No certificate files available for ${servername}`);
+        return context;
+    }
+
     _initSniResolver() {
         this._sniCallback = (servername, callback) => {
-            const normalizedServername = this._normalizeHostInput(servername).trim().toLowerCase();
-            try {
-                const pems = this._resolvePemsForServername(normalizedServername);
-                if (pems) {
-                    callback(null, tls.createSecureContext({ key: pems.key, cert: pems.cert }));
-                    return;
-                }
-            } catch (error) {
-                callback(error);
-                return;
-            }
-
-            // Cluster-friendly automatic issuance path (no internal listen lifecycle).
-            if (!this._greenlockRuntime || !normalizedServername) {
-                callback(new Error(`No certificate files available for ${servername}`));
-                return;
-            }
-
-            this._greenlockRuntime.get({ servername: normalizedServername })
-                .then(() => {
-                    const issued = this._resolvePemsForServername(normalizedServername);
-                    if (issued) {
-                        callback(null, tls.createSecureContext({ key: issued.key, cert: issued.cert }));
-                    } else {
-                        callback(new Error(`No certificate files available for ${servername}`));
-                    }
-                })
-                .catch((error) => {
-                    callback(error);
-                });
+            this._getSecureContext(servername).then(context => callback(null, context), callback);
         };
     }
 
@@ -850,6 +957,7 @@ class Roster {
             staging: this.staging,
             skipDryRun: this.skipLocalCheck,
             skipChallengeTest: this.skipLocalCheck,
+            renew: false,
             notify: (event, details) => {
                 const eventDomain = (() => {
                     if (!details || typeof details !== 'object') return null;
@@ -923,12 +1031,12 @@ class Roster {
     }
 
     _startCertificateRenewLoop() {
-        if (!this._greenlockRuntime || this._certificateRenewTimer) return;
+        if (this._closing || !this._greenlockRuntime || this._certificateRenewTimer) return;
         const subjects = this._getManagedCertificateSubjects();
         if (subjects.length === 0) return;
         this._certificateRenewTimer = setInterval(() => {
             subjects.forEach((subject) => {
-                this._greenlockRuntime.get({ servername: subject }).catch((error) => {
+                this._checkCertificate(subject).catch((error) => {
                     log.warn(`⚠️  Certificate renew check failed for ${subject}: ${error?.message || error}`);
                 });
             });
@@ -939,6 +1047,7 @@ class Roster {
     }
 
     async ensureCertificate(servername) {
+        this._assertOpen();
         if (this.local) {
             throw new Error('ensureCertificate() is not available in local mode');
         }
@@ -954,7 +1063,7 @@ class Roster {
         if (!this._greenlockRuntime) {
             throw new Error('autoCertificates is disabled; enable { autoCertificates: true } to issue certificates automatically');
         }
-        await this._greenlockRuntime.get({ servername: normalizedServername });
+        await this._checkCertificate(normalizedServername);
         pems = this._resolvePemsForServername(normalizedServername);
         if (!pems) {
             throw new Error(`Certificate issuance completed but no PEM files were found for ${normalizedServername}`);
@@ -963,6 +1072,7 @@ class Roster {
     }
 
     loadCertificate(servername) {
+        this._assertOpen();
         if (this.local) {
             throw new Error('loadCertificate() is not available in local mode');
         }
@@ -980,9 +1090,28 @@ class Roster {
         return pems;
     }
 
-    async init() {
-        if (this._initialized) return this;
+    _assertOpen() {
+        if (this._closing) throw new Error('Roster is closing or closed');
+    }
+
+    init() {
+        if (this._closing) return Promise.reject(new Error('Roster is closing or closed'));
+        if (this._initPromise) return this._initPromise;
+        this._initTask = this._initialize();
+        this._initPromise = this._initTask.catch(async error => {
+            if (!this._closing) {
+                try { await this.close(); } catch (cleanupError) {
+                    throw new AggregateError([error, cleanupError], 'Initialization and cleanup failed');
+                }
+            }
+            throw error;
+        });
+        return this._initPromise;
+    }
+
+    async _initialize() {
         await this.loadSites();
+        this._assertOpen();
         if (!this.local) {
             this.generateConfigJson();
             if (this.autoCertificates) {
@@ -990,6 +1119,7 @@ class Roster {
             }
         }
         this._initSiteHandlers();
+        this._assertOpen();
         if (!this.local) {
             this._initSniResolver();
             if (this.autoCertificates) {
@@ -998,6 +1128,147 @@ class Roster {
         }
         this._initialized = true;
         return this;
+    }
+
+    _beginRequest(res) {
+        if (this._closing) {
+            res.writeHead(503, { Connection: 'close' });
+            res.end('Server is closing');
+            return false;
+        }
+        if (typeof res.once === 'function') {
+            this._responses.add(res);
+            const done = () => {
+                this._responses.delete(res);
+                res.removeListener('finish', done);
+                res.removeListener('close', done);
+            };
+            res.once('finish', done);
+            res.once('close', done);
+        }
+        return true;
+    }
+
+    _listen(server, port, hostname) {
+        this._assertOpen();
+        this._ownedServers.add(server);
+        server.on('connection', socket => {
+            this._sockets.add(socket);
+            socket.once('close', () => this._sockets.delete(socket));
+            if (this._closing) socket.destroy();
+        });
+        return new Promise((resolve, reject) => {
+            const done = error => {
+                server.removeListener('error', failed);
+                server.removeListener('listening', listening);
+                this._pendingListens.delete(cancel);
+                if (error) reject(error);
+                else resolve();
+            };
+            const failed = error => done(error);
+            const listening = () => done();
+            const cancel = () => {
+                // A pending DNS lookup may complete after close().
+                server.once('listening', () => server.close());
+                done(new Error('Roster is closing or closed'));
+            };
+            this._pendingListens.add(cancel);
+            server.once('error', failed);
+            server.once('listening', listening);
+            server.on('error', error => log.error(`Server error on port ${port}:`, error.message));
+            try { server.listen(port, hostname); } catch (error) { done(error); }
+        });
+    }
+
+    close() {
+        if (this._closePromise) return this._closePromise;
+        this._closing = true;
+        this._closePromise = this._close();
+        return this._closePromise;
+    }
+
+    async _close() {
+        const errors = [];
+        let timer;
+        const timeoutError = new Error('Roster close timed out');
+        const timeout = new Promise((resolve, reject) => {
+            timer = setTimeout(() => {
+                for (const res of this._responses) res.destroy();
+                for (const socket of this._sockets) socket.destroy();
+                for (const server of this._ownedServers) server.closeAllConnections();
+                reject(timeoutError);
+            }, this.closeTimeoutMs);
+        });
+        const wait = async promise => {
+            try { await Promise.race([promise, timeout]); } catch (error) {
+                if (!errors.includes(error)) errors.push(error);
+            }
+        };
+        try {
+            clearInterval(this._certificateRenewTimer);
+            this._certificateRenewTimer = null;
+            for (const timer of this._retryTimers) clearTimeout(timer);
+            this._retryTimers.clear();
+            for (const cancel of this._pendingListens) cancel();
+            if (this._initTask) await wait(this._initTask.catch(() => {}));
+
+            const draining = [...this._responses].map(res => new Promise(resolve => {
+                const done = () => {
+                    res.removeListener('finish', done);
+                    res.removeListener('close', done);
+                    resolve();
+                };
+                res.once('finish', done);
+                res.once('close', done);
+            }));
+            const closeServer = server => new Promise(resolve => {
+                try {
+                    server.close(error => {
+                        if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') errors.push(error);
+                        resolve();
+                    });
+                    server.closeIdleConnections();
+                } catch (error) {
+                    errors.push(error);
+                    resolve();
+                }
+            });
+            // Bun's close() releases its native server handle before upgraded
+            // connections finish, preventing a later closeAllConnections().
+            const closing = isBunRuntime ? [] : [...this._ownedServers].map(closeServer);
+            const virtualServers = Object.values(this._sitesByPort).flatMap(portData => Object.values(portData.virtualServers));
+            for (const server of virtualServers) {
+                try { server.close(); } catch (error) { errors.push(error); }
+            }
+            for (const socket of this._upgradedSockets) socket.destroy();
+            await wait(Promise.all([
+                ...closing, ...draining,
+                Promise.allSettled([...this._certificateChecks.values(), ...this._contextLoads.values()])
+            ]));
+            if (isBunRuntime) {
+                for (const server of this._ownedServers) server.closeAllConnections();
+                await wait(Promise.all([...this._ownedServers].map(closeServer)));
+            }
+
+            const hooks = virtualServers.flatMap(server => server._closeHooks.splice(0).map(hook =>
+                Promise.resolve().then(() => hook())
+            ));
+            await wait(Promise.allSettled(hooks).then(results => {
+                for (const result of results) {
+                    if (result.status === 'rejected') errors.push(result.reason);
+                }
+            }));
+        } finally {
+            clearTimeout(timer);
+            for (const [server, handlers] of this._attachments) {
+                server.removeListener('request', handlers.request);
+                server.removeListener('upgrade', handlers.upgrade);
+            }
+            this._attachments.clear();
+            this._secureContexts.clear();
+            this._ownedServers.clear();
+        }
+        if (errors.length) throw new AggregateError(errors, 'Roster close failed');
     }
 
     requestHandler(port) {
@@ -1030,9 +1301,18 @@ class Roster {
     }
 
     attach(server, { port } = {}) {
+        this._assertOpen();
         if (!this._initialized) throw new Error('Call init() before attach()');
-        server.on('request', this.requestHandler(port));
-        server.on('upgrade', this.upgradeHandler(port));
+        const targetPort = port || this.defaultPort;
+        const existing = this._attachments.get(server);
+        if (existing) {
+            if (existing.port !== targetPort) throw new Error('Server is already attached to another port');
+            return this;
+        }
+        const handlers = { request: this.requestHandler(port), upgrade: this.upgradeHandler(port), port: targetPort };
+        server.on('request', handlers.request);
+        server.on('upgrade', handlers.upgrade);
+        this._attachments.set(server, handlers);
         return this;
     }
 
@@ -1076,7 +1356,7 @@ class Roster {
         });
     }
 
-    startLocalMode() {
+    async startLocalMode() {
         this.domainPorts = {};
 
         for (const portData of Object.values(this._sitesByPort)) {
@@ -1089,13 +1369,13 @@ class Roster {
                 const appHandler = portData.appHandlers[domain];
 
                 const dispatcher = (req, res) => {
+                    if (!this._beginRequest(res)) return;
                     const host = (req.headers.host || '').split(':')[0].toLowerCase();
                     if (this._runRequestPlugins(req, res, { host, domain })) return;
-                    virtualServer.fallbackHandler = appHandler;
                     if (virtualServer.requestListeners.length > 0) {
                         virtualServer.processRequest(req, res);
                     } else if (appHandler) {
-                        appHandler(req, res);
+                        return invokeRequest(appHandler, req, res);
                     } else {
                         res.writeHead(404);
                         res.end('Site not found');
@@ -1106,17 +1386,14 @@ class Roster {
                 this.portServers[port] = httpServer;
 
                 httpServer.on('upgrade', (req, socket, head) => {
+                    if (this._closing) { socket.destroy(); return; }
+                    this._trackUpgrade(socket);
                     virtualServer.processUpgrade(req, socket, head);
                 });
 
-                httpServer.listen(port, 'localhost', () => {
-                    const cleanDomain = normalizeDomainForLocalHost(domain);
-                    log.info(`🌐 ${domain} → http://${localHostForDomain(cleanDomain)}:${port}`);
-                });
-
-                httpServer.on('error', (error) => {
-                    log.error(`❌ Error on port ${port} for ${domain}:`, error.message);
-                });
+                await this._listen(httpServer, port, 'localhost');
+                const cleanDomain = normalizeDomainForLocalHost(domain);
+                log.info(`🌐 ${domain} → http://${localHostForDomain(cleanDomain)}:${port}`);
             }
         }
 
@@ -1124,27 +1401,50 @@ class Roster {
         return Promise.resolve();
     }
 
-    async start() {
+    start() {
+        if (this._closing) return Promise.reject(new Error('Roster is closing or closed'));
+        if (!this._startPromise) {
+            this._startPromise = this._start().catch(async error => {
+                if (!this._closing) {
+                    try { await this.close(); } catch (cleanupError) {
+                        throw new AggregateError([error, cleanupError], 'Startup and cleanup failed');
+                    }
+                }
+                throw error;
+            });
+        }
+        return this._startPromise;
+    }
+
+    async _start() {
         await this.init();
+        this._assertOpen();
 
         if (this.local) {
             return this.startLocalMode();
         }
 
         const greenlockOptions = this._buildGreenlockOptions();
-        const greenlockRuntime = GreenlockShim.create(greenlockOptions);
+        const greenlockRuntime = this._greenlockRuntime || GreenlockShim.create(greenlockOptions);
+        this._greenlockRuntime = greenlockRuntime;
+        this._startCertificateRenewLoop();
         const greenlock = Greenlock.init({
             ...greenlockOptions,
-            greenlock: greenlockRuntime
+            greenlock: greenlockRuntime,
+            onServerError: error => log.error('Server error:', error.message)
         });
 
-        return greenlock.ready(async glx => {
+        if (this.cluster && require('cluster').isPrimary) {
+            return greenlock.ready();
+        }
+        const glx = await new Promise(resolve => greenlock.ready(resolve));
+        this._assertOpen();
+        {
             const httpServer = glx.httpServer();
             const bunTlsHotReloadHandlers = [];
 
-            httpServer.listen(80, this.hostname, () => {
-                log.info('HTTP server listening on port 80');
-            });
+            await this._listen(httpServer, 80, this.hostname);
+            log.info('HTTP server listening on port 80');
 
             for (const [port, portData] of Object.entries(this._sitesByPort)) {
                 const portNum = parseInt(port);
@@ -1159,7 +1459,7 @@ class Roster {
                     if (pems) return pems;
 
                     try {
-                        await greenlockRuntime.get({ servername: host });
+                        await this._checkCertificate(host);
                     } catch (error) {
                         log.warn(`⚠️  Greenlock issuance failed for ${host}: ${error?.message || error}`);
                     }
@@ -1172,7 +1472,7 @@ class Roster {
                     if (zone) {
                         const bootstrapHost = `bun-bootstrap.${zone}`;
                         try {
-                            await greenlockRuntime.get({ servername: bootstrapHost });
+                            await this._checkCertificate(bootstrapHost);
                         } catch (error) {
                             log.warn(`⚠️  Greenlock wildcard bootstrap failed for ${bootstrapHost}: ${error?.message || error}`);
                         }
@@ -1201,7 +1501,7 @@ class Roster {
                     const certSubject = primaryDomain.startsWith('*.') ? wildcardRoot(primaryDomain) : primaryDomain;
                     log.warn(`⚠️  Bun: requesting ${needsWildcard ? 'combined wildcard' : ''} certificate for ${certSubject} via Greenlock before HTTPS bind`);
                     try {
-                        await greenlockRuntime.get({ servername: certSubject });
+                        await this._checkCertificate(certSubject);
                     } catch (error) {
                         log.error(`❌ Failed to obtain certificate for ${certSubject} under Bun:`, error?.message || error);
                     }
@@ -1222,23 +1522,28 @@ class Roster {
                     if (isBunRuntime) {
                         const primaryDomain = Object.keys(portData.virtualServers)[0];
                         let defaultPems = await ensureBunDefaultPems(primaryDomain);
+                        let defaultContext = tls.createSecureContext(defaultPems);
                         httpsServer = https.createServer({
                             ...tlsOpts,
                             key: defaultPems.key,
                             cert: defaultPems.cert,
                             SNICallback: (servername, callback) => {
-                                issueAndReloadPemsForServername(servername)
-                                    .then((pems) => {
-                                        const selected = pems || defaultPems;
-                                        callback(null, tls.createSecureContext({ key: selected.key, cert: selected.cert }));
-                                    })
-                                    .catch(callback);
+                                const resolveContext = async () => {
+                                    const cached = await this._resolveSecureContext(servername);
+                                    if (cached) return cached;
+                                    const pems = await issueAndReloadPemsForServername(servername);
+                                    this._assertOpen();
+                                    return pems ? this._getSecureContext(servername, false) : defaultContext;
+                                };
+                                resolveContext().then(context => callback(null, context), callback);
                             }
                         }, dispatcher);
                         const reloadBunDefaultTls = async (servername, reason) => {
                             const nextPems = await issueAndReloadPemsForServername(servername);
                             if (!nextPems) return false;
+                            this._assertOpen();
                             defaultPems = nextPems;
+                            defaultContext = tls.createSecureContext(defaultPems);
                             if (typeof httpsServer.setSecureContext === 'function') {
                                 try {
                                     httpsServer.setSecureContext({ key: defaultPems.key, cert: defaultPems.cert });
@@ -1258,33 +1563,19 @@ class Roster {
                     this.portServers[portNum] = httpsServer;
                     httpsServer.on('upgrade', upgradeHandler);
 
-                    httpsServer.listen(portNum, this.hostname, () => {
-                        log.info(`HTTPS server listening on port ${portNum}`);
-                    });
+                    await this._listen(httpsServer, portNum, this.hostname);
+                    log.info(`HTTPS server listening on port ${portNum}`);
                 } else {
                     const httpsOptions = {
                         minVersion: this.tlsMinVersion,
                         maxVersion: this.tlsMaxVersion,
                         SNICallback: (servername, callback) => {
-                            try {
-                                const pems = this._resolvePemsForServername(servername);
-                                if (pems) {
-                                    callback(null, tls.createSecureContext({ key: pems.key, cert: pems.cert }));
-                                } else {
-                                    callback(new Error(`No certificate files available for ${servername}`));
-                                }
-                            } catch (error) {
-                                callback(error);
-                            }
+                            this._getSecureContext(servername, false).then(context => callback(null, context), callback);
                         }
                     };
 
                     const httpsServer = https.createServer(httpsOptions, dispatcher);
                     httpsServer.on('upgrade', upgradeHandler);
-
-                    httpsServer.on('error', (error) => {
-                        log.error(`HTTPS server error on port ${portNum}:`, error.message);
-                    });
 
                     httpsServer.on('tlsClientError', (error) => {
                         if (!error.message.includes('http request')) {
@@ -1294,13 +1585,8 @@ class Roster {
 
                     this.portServers[portNum] = httpsServer;
 
-                    httpsServer.listen(portNum, this.hostname, (error) => {
-                        if (error) {
-                            log.error(`Failed to start HTTPS server on port ${portNum}:`, error.message);
-                        } else {
-                            log.info(`HTTPS server listening on port ${portNum}`);
-                        }
-                    });
+                    await this._listen(httpsServer, portNum, this.hostname);
+                    log.info(`HTTPS server listening on port ${portNum}`);
                 }
             }
 
@@ -1315,6 +1601,7 @@ class Roster {
                 for (const zone of this.wildcardZones) {
                     const bootstrapHost = `bun-bootstrap.${zone}`;
                     const attemptPrewarm = async (attempt = 1) => {
+                        if (this._closing) return;
                         try {
                             log.warn(`⚠️  Bun runtime detected: prewarming wildcard certificate via ${bootstrapHost} (attempt ${attempt})`);
                             let reloaded = false;
@@ -1331,16 +1618,20 @@ class Roster {
                                 log.warn(`⚠️  Bun wildcard prewarm stopped for ${zone} after ${attempt} attempts`);
                                 return;
                             }
-                            setTimeout(() => {
+                            if (this._closing) return;
+                            const timer = setTimeout(() => {
+                                this._retryTimers.delete(timer);
                                 attemptPrewarm(attempt + 1).catch(() => {});
                             }, retryDelayMs);
+                            this._retryTimers.add(timer);
                         }
                     };
 
                     attemptPrewarm().catch(() => {});
                 }
             }
-        });
+        }
+        return this;
     }
 }
 

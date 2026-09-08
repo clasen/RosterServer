@@ -5,7 +5,7 @@ var Worker = module.exports;
 var messageTimeout = 30 * 1000;
 var msgPrefix = "greenlock:";
 
-Worker.create = function() {
+Worker.create = function(opts) {
     var greenlock = {};
     ["getAcmeHttp01ChallengeResponse", "get", "notify", "_notify"].forEach(function(k) {
         greenlock[k] = function(args) {
@@ -15,7 +15,7 @@ Worker.create = function() {
 
     var worker = {
         ready: function(fn) {
-            var servers = require("./servers.js").create(greenlock);
+            var servers = require("./servers.js").create(greenlock, opts && opts.onServerError);
             fn(servers);
             return worker;
         },

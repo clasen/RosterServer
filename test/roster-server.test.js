@@ -16,14 +16,8 @@ const {
     buildCertLookupCandidates
 } = require('../index.js');
 
-function closePortServers(roster) {
-    if (roster.portServers && typeof roster.portServers === 'object') {
-        for (const server of Object.values(roster.portServers)) {
-            try {
-                server.close();
-            } catch (_) {}
-        }
-    }
+async function closePortServers(roster) {
+    await roster.close();
 }
 
 function httpGet(host, port, pathname = '/') {
@@ -490,7 +484,7 @@ describe('Roster local mode (local: true)', () => {
             assert.strictEqual(probe.statusCode, 404);
             assert.strictEqual(probe.body, 'Not Found');
         } finally {
-            closePortServers(roster);
+            await closePortServers(roster);
         }
     });
 
@@ -507,7 +501,7 @@ describe('Roster local mode (local: true)', () => {
             assert.ok(url && url.startsWith('http://localhost:'));
             assert.ok(roster.domainPorts['geturltest.example'] !== undefined);
         } finally {
-            closePortServers(roster);
+            await closePortServers(roster);
         }
     });
 });
@@ -533,26 +527,32 @@ describe('Roster loadSites', () => {
         try {
             await roster.init();
 
-            const dispatch = (port) => {
+            const { Writable } = require('stream');
+            const dispatch = async (port) => {
                 let statusCode;
                 let body = '';
-                const res = {
-                    writeHead: (status) => { statusCode = status; },
-                    end: (value) => { body = value ? value.toString() : ''; }
-                };
+                const res = new Writable({
+                    write(chunk, encoding, done) { body += chunk.toString(); done(); }
+                });
+                res.writeHead = status => { statusCode = status; };
+                const finished = new Promise((resolve, reject) => {
+                    res.once('finish', resolve);
+                    res.once('error', reject);
+                });
                 roster.requestHandler(port)(
                     { headers: { host: 'persist.example.com' }, method: 'GET', url: '/' },
                     res
                 );
+                await finished;
                 return { statusCode, body };
             };
 
-            assert.deepStrictEqual(dispatch(443), {
+            assert.deepStrictEqual(await dispatch(443), {
                 statusCode: 200,
                 body: '<html>static-443</html>'
             });
-            assert.deepStrictEqual(dispatch(8880), { statusCode: 200, body: 'app-8880' });
-            assert.deepStrictEqual(dispatch(8882), { statusCode: 200, body: 'socket-8882' });
+            assert.deepStrictEqual(await dispatch(8880), { statusCode: 200, body: 'app-8880' });
+            assert.deepStrictEqual(await dispatch(8882), { statusCode: 200, body: 'socket-8882' });
         } finally {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
@@ -691,7 +691,7 @@ describe('Roster loadSites', () => {
             assert.strictEqual(result.statusCode, 200);
             assert.ok(result.body.includes('static ok'));
         } finally {
-            closePortServers(roster);
+            await closePortServers(roster);
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
     });
@@ -711,7 +711,7 @@ describe('Roster loadSites', () => {
             const result = await httpGet('localhost', port, '/nonexistent.html');
             assert.strictEqual(result.statusCode, 404);
         } finally {
-            closePortServers(roster);
+            await closePortServers(roster);
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
     });
@@ -738,7 +738,7 @@ describe('Roster loadSites', () => {
             assert.strictEqual(resultNoSlash.statusCode, 200);
             assert.ok(resultNoSlash.body.includes('en page'));
         } finally {
-            closePortServers(roster);
+            await closePortServers(roster);
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
     });
@@ -860,7 +860,7 @@ describe('Roster init() (cluster-friendly API)', () => {
             assert.strictEqual(result.statusCode, 200);
             assert.strictEqual(result.body, 'after-init');
         } finally {
-            closePortServers(roster);
+            await closePortServers(roster);
         }
     });
 });

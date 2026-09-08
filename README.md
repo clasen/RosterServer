@@ -1,393 +1,38 @@
 # 👾 RosterServer
 
-**Because hosting multiple HTTPS sites has never been easier!**
+Host multiple domains from one Node.js process, with HTTPS certificates managed through Greenlock, Express and Socket.IO integration, static file serving, and local HTTP development. Each site receives a virtual server for request and upgrade listeners; applications share the process.
 
-Welcome to **RosterServer**, the ultimate domain host router with automatic HTTPS and virtual hosting. Why juggle multiple servers when you can have one server to rule them all? 😉
+## Installation
 
-## ✨ Features
-
-- **Automatic HTTPS** with Let's Encrypt via Greenlock.
-- **Dynamic Site Loading**: Just drop your Node.js apps in the `www` folder.
-- **Static Sites**: No code? No problem. Drop a folder with `index.html` (and assets) and RosterServer serves it automatically—modular static handler with path-traversal protection and strict 404s.
-- **Virtual Hosting**: Serve multiple domains from a single server.
-- **Automatic Redirects**: Redirect `www` subdomains to the root domain.
-- **Optional Request Plugins**: Run synchronous filters before site handlers, including the bundled scanner blocker.
-- **Zero Configuration**: Well, almost zero. Just a tiny bit of setup.
-- **Bun compatible**: Works with both Node.js and [Bun](https://bun.sh).
-
-## 📦 Installation
-
-```bash
-npm install roster-server
+```sh
+pnpm add roster-server
 ```
 
-Or with [Bun](https://bun.sh):
+`npm install roster-server` and `bun add roster-server` are also supported installation commands. The package exports a CommonJS constructor that can also be imported as an ESM default. Server examples below use `.mjs`; site examples use `.cjs`.
 
-```bash
-bun add roster-server
-```
+## Quick start: local HTTP
 
-## 🤖 AI Skill
-
-You can also add RosterServer as a skill for AI agentic development:
-
-```bash
-npx skills add https://github.com/clasen/RosterServer --skill roster-server
-```
-
-## 🛠️ Usage
-
-### Directory Structure
-
-Your project should look something like this:
-
-```
-/srv/
-├── greenlock.d/
-├── roster/server.js
-└── www/
-    ├── example.com/
-    │   └── index.js
-    ├── subdomain.example.com/
-    │   └── index.js
-    ├── static-site.com/        # Static site: no index.js needed
-    │   ├── index.html
-    │   ├── css/
-    │   └── images/
-    ├── other-domain.com/
-    │   └── index.js
-    └── *.example.com/          # Wildcard: one handler for all subdomains (api.example.com, app.example.com, etc.)
-        └── index.js
-```
-
-Each domain folder can have either:
-- **Node app**: `index.js`, `index.mjs`, or `index.cjs` (exporting a request handler).
-- **Static site**: `index.html` (and any assets). If no JS entry exists, RosterServer serves the folder as static files. Node takes precedence when both exist.
-
-### Wildcard DNS (*.example.com)
-
-You can serve all subdomains of a domain with a single handler in three ways:
-
-1. **Folder**: Create a directory named literally `*.example.com` under `www` (e.g. `www/*.example.com/index.js`). Any request to `api.example.com`, `app.example.com`, etc. will use that handler.
-2. **Register (default port)**: `roster.register('*.example.com', handler)` for the default HTTPS port.
-3. **Register (custom port)**: `roster.register('*.example.com:8080', handler)` for a specific port.
-
-Wildcard SSL certificates require **DNS-01** validation (Let's Encrypt does not support HTTP-01 for wildcards). By default Roster uses `acme-dns-01-cli` through an internal wrapper (adds `propagationDelay` and modern plugin signatures).
-
-For fully automatic TXT records with Linode DNS, set:
-
-```bash
-export ROSTER_DNS_PROVIDER=linode
-export LINODE_API_KEY=...
-```
-
-Then Roster creates/removes `_acme-challenge` TXT records automatically via `api.linode.com`.
-If `LINODE_API_KEY` is present, this mode auto-enables by default for wildcard DNS-01.
-
-Override with a custom plugin:
+Save as `server.mjs` and run `node server.mjs` from your application directory:
 
 ```javascript
+import path from 'node:path';
 import Roster from 'roster-server';
 
 const roster = new Roster({
-    email: 'admin@example.com',
-    wwwPath: '/srv/www',
-    greenlockStorePath: '/srv/greenlock.d',
-    dnsChallenge: { module: 'acme-dns-01-route53', /* provider options */ }  // optional override
-});
-```
-
-Set `dnsChallenge: false` to disable. For other DNS providers install the plugin in your app and pass it. See [Greenlock DNS plugins](https://git.rootprojects.org/root/greenlock-express.js#dns-01-challenge-plugins).
-
-### Setting Up Your Server
-
-```javascript
-// /srv/roster/server.js
-import Roster from 'roster-server';
-
-const options = {
-    email: 'admin@example.com',
-    greenlockStorePath: '/srv/greenlock.d', // Path to your Greenlock configuration directory
-    wwwPath: '/srv/www' // Path to your 'www' directory (default: '../www')
-};
-
-const server = new Roster(options);
-server.start();
-```
-
-### Blocking vulnerability scanners
-
-RosterServer includes an optional request plugin that rejects common PHP, WordPress, repository, and sensitive-file probes before they reach a site handler. Suspicious paths always receive a `404`; after the configured number of strikes, every request from that client is rejected until the ban expires.
-
-```javascript
-import Roster from 'roster-server';
-import { createScannerBlocker } from 'roster-server/plugins/scanner-blocker.js';
-
-const roster = new Roster(options);
-
-roster.use(createScannerBlocker({
-    onBlock(event) {
-        // Send event to the application's existing logger if desired.
-    }
-}));
-
-roster.start();
-```
-
-By default, the plugin uses a 60-second strike window, 3 strikes, a 15-minute ban, tracks up to 10,000 clients, and does not trust proxy headers. Pass only the values you need to override. Keep `trustProxy: false` when RosterServer receives traffic directly. Set it to `true` only when a trusted reverse proxy overwrites `X-Forwarded-For`; otherwise clients can spoof the address used for bans.
-
-The in-memory strike and ban state is bounded by `maxTrackedClients`, belongs to one RosterServer process, and is cleared on restart. Use the optional `onBlock(event)` callback to feed a shared firewall or Fail2ban when bans must persist or span multiple workers. Routes such as `/atom` and `/articles/config` are not classified as scanner probes.
-
-### Your Site Handlers
-
-Each domain has its own folder under `www`. You can use:
-
-- **Node app**: Put `index.js` (or `index.mjs` / `index.cjs`) that exports a request handler function.
-- **Static site**: Put `index.html` and your assets (CSS, JS, images). RosterServer will serve files from that folder. `GET /` serves `index.html`; other paths serve the file if it exists, or 404. Path traversal is blocked. If both an index script and `index.html` exist, the script is used.
-
-### Examples
-
-I'll help analyze the example files shown. You have 3 different implementations demonstrating various ways to handle requests in RosterServer:
-
-1. **Basic HTTP Handler**:
-```javascript:demo/www/example.com/index.js
-export default (httpsServer) => {
-    return (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
-    };
-};
-```
-
-2. **Express App**:
-```javascript:demo/www/express.example.com/index.js
-import express from 'express';
-
-export default (httpsServer) => {
-    const app = express();
-    app.get('/', (req, res) => {
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
-    });
-
-    return app;
-}
-```
-
-3. **Socket.IO Server**:
-```javascript:demo/www/sio.example.com/index.js
-import { Server } from 'socket.io';
-
-export default (httpsServer) => {
-    const io = new Server(httpsServer);
-
-    io.on('connection', (socket) => {
-        console.log('A user connected');
-
-        socket.on('chat:message', (msg) => {
-            console.log('Message received:', msg);
-            io.emit('chat:message', msg);
-        });
-
-        socket.on('disconnect', () => {
-            console.log('User disconnected');
-        });
-    });
-
-    return (req, res) => {
-        if (req.url && req.url.startsWith(io.opts.path)) return;
-        res.writeHead(200);
-        res.end('Socket.IO server running');
-    };
-};
-```
-
-4. **Manual**:
-```javascript:demo/www/manual.js
-roster.register('example.com', (httpsServer) => {
-    return (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('"Loco de pensar, queriendo entrar en razón, y el corazón tiene razones que la propia razón nunca entenderá."');
-    };
-});
-```
-
-5. **Manual: Custom port**:
-```javascript:demo/www/manual.js
-roster.register('example.com:8080', (httpsServer) => {
-    return (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('"Mad with thought, striving to embrace reason, yet the heart holds reasons that reason itself shall never comprehend."');
-    };
-});
-```
-
-### Running the Server
-
-```bash
-# With Node.js
-node server.js
-```
-
-Or with Bun:
-
-```bash
-bun server.js
-```
-
-And that's it! Your server is now hosting multiple HTTPS-enabled sites. 🎉
-
-## 🤯 But Wait, There's More!
-
-### Static Sites (index.html)
-
-Domains under `www` that have no `index.js`/`index.mjs`/`index.cjs` but do have `index.html` are served as static sites. The logic lives in `lib/static-site-handler.js` and `lib/resolve-site-app.js`:
-
-- **`GET /`** and **`GET /index.html`** serve `index.html`.
-- Any other path serves the file under the domain folder if it exists; otherwise **404** (strict, no SPA fallback).
-- Path traversal (e.g. `/../`) is rejected with **403**.
-- Content-Type is set from extension (html, css, js, images, fonts, etc.).
-
-No Express or extra dependencies—plain Node. At startup you’ll see `(✔) Loaded site: https://example.com (static)` for these domains.
-
-### Automatic SSL Certificate Management
-
-RosterServer uses [greenlock-express](https://www.npmjs.com/package/greenlock-express) to automatically obtain and renew SSL certificates from Let's Encrypt. No need to manually manage certificates ever again. Unless you enjoy that sort of thing. 🧐
-
-### Redirects from `www`
-
-All requests to `www.yourdomain.com` are automatically redirected to `yourdomain.com`. Because who needs the extra three characters? 😏
-
-### Dynamic Site Loading
-
-Add a new site? Drop it into the `www` folder: either an `index.js` (or `.mjs`/`.cjs`) for a Node app, or an `index.html` (plus assets) for a static site. RosterServer picks the right handler automatically. Restart the server to load new sites—nodemon has your back. 😅
-
-## ⚙️ Configuration Options 
-
-When creating a new `RosterServer` instance, you can pass the following options:
-
-- `email` (string): Your email for Let's Encrypt notifications.
-- `wwwPath` (string): Path to your `www` directory containing your sites.
-- `greenlockStorePath` (string): Directory for Greenlock configuration.
-- `dnsChallenge` (object|false): Optional override for wildcard DNS-01 challenge config. Default is `acme-dns-01-cli` wrapper with `propagationDelay: 120000`, `autoContinue: false`, and `dryRunDelay: 120000`. Manual mode still works, but you can enable automatic Linode DNS API mode by setting `ROSTER_DNS_PROVIDER=linode` and `LINODE_API_KEY`. In automatic mode, Roster creates/removes TXT records itself and still polls public resolvers every 15s before continuing. Set `false` to disable DNS challenge. You can pass `{ module: '...', propagationDelay: 180000 }` to tune DNS wait time (ms). For Greenlock dry-runs (`_greenlock-dryrun-*`), delay defaults to `dryRunDelay` (same as `propagationDelay` unless overridden with `dnsChallenge.dryRunDelay` or env `ROSTER_DNS_DRYRUN_DELAY_MS`). When wildcard sites are present, Roster creates a separate wildcard certificate (`*.example.com`) that uses `dns-01`, while apex/www stay on the regular certificate flow (typically `http-01`), reducing manual TXT records.
-- `staging` (boolean): Set to `true` to use Let's Encrypt's staging environment (for testing).
-- `autoCertificates` (boolean): Enables automatic certificate issuance and renewal in production lifecycle. **Default: `true`**. Set to `false` only if certificates are managed externally.
-- `certificateRenewIntervalMs` (number): Renewal check interval when `autoCertificates` is enabled (minimum 60s, default 12h).
-- `local` (boolean): Set to `true` to run in local development mode.
-- `minLocalPort` (number): Minimum port for local mode (default: 4000).
-- `maxLocalPort` (number): Maximum port for local mode (default: 9999).
-
-## 🏠 Local Development Mode
-
-For local development and testing, you can run RosterServer in local mode by setting `local: true`. This mode is perfect for development environments where you don't need SSL certificates or production features.
-
-When `{ local: true }` is enabled, RosterServer **Skips SSL/HTTPS**: Runs pure HTTP servers instead of HTTPS.
-
-### Setting Up Local Mode
-
-```javascript
-import Roster from 'roster-server';
-
-const server = new Roster({
-    wwwPath: '/srv/www',
-    local: true,  // Enable local development mode
-    minLocalPort: 4000,  // Optional: minimum port (default: 4000)
-    maxLocalPort: 9999   // Optional: maximum port (default: 9999)
-});
-server.start();
-```
-
-### Port Assignment
-
-In local mode, domains are automatically assigned ports based on a CRC32 hash of the domain name (default range 4000-9999, configurable via `minLocalPort` and `maxLocalPort`):
-
-- `example.com` → `http://localhost:9465`
-- `api.example.com` → `http://localhost:9388`  
-- And so on...
-
-You can customize the port range:
-
-```javascript
-import Roster from 'roster-server';
-
-const roster = new Roster({ 
     local: true,
-    minLocalPort: 5000,  // Start from port 5000
-    maxLocalPort: 6000   // Up to port 6000
+    wwwPath: path.resolve('www')
 });
-```
 
-### Getting URLs
-
-RosterServer provides a method to get the URL for a domain that adapts automatically to your environment:
-
-**Instance Method: `roster.getUrl(domain)`**
-
-```javascript
-import Roster from 'roster-server';
-
-const roster = new Roster({ local: true });
-roster.register('example.com', handler);
-
+roster.register('example.com', () => (req, res) => res.end('Hello'));
 await roster.start();
-
-// Get the URL - automatically adapts to environment
-const url = roster.getUrl('example.com');
-console.log(url); 
-// Local mode: http://localhost:9465
-// Local subdomain: http://api.localhost:9465
-// Production mode: https://example.com
+console.log(roster.getUrl('example.com'));
 ```
 
-This method:
-- Returns the correct URL based on your environment (`local: true/false`)
-- In **local mode**: Returns `http://localhost:{port}` for apex domains and `http://{subdomain}.localhost:{port}` for subdomains
-- In **production mode**: Returns `https://{domain}` (or with custom port if configured)
-- Handles `www.` prefix automatically (returns same URL)
-- Returns `null` for domains that aren't registered
+Local mode binds to `localhost`, skips certificates, and assigns domain ports within `minLocalPort`–`maxLocalPort` (default `4000`–`9999`). Assignments use a domain hash and resolve collisions within the instance; they do not probe for available OS ports. A bind failure rejects startup. Read the assigned URL with `getUrl()` instead of hardcoding a sample port.
 
-**Example Usage:**
+For production HTTPS, use a real contact email, public DNS pointing to the host, and explicit storage paths:
 
 ```javascript
-import Roster from 'roster-server';
-
-// Local development
-const localRoster = new Roster({ local: true });
-localRoster.register('example.com', handler);
-localRoster.register('api.example.com', handler);
-await localRoster.start();
-console.log(localRoster.getUrl('example.com')); 
-// → http://localhost:9465
-console.log(localRoster.getUrl('api.example.com'));
-// → http://api.localhost:7342
-
-// Production
-const prodRoster = new Roster({ local: false });
-prodRoster.register('example.com', handler);
-await prodRoster.start();
-console.log(prodRoster.getUrl('example.com')); 
-// → https://example.com
-
-// Production with custom port
-const customRoster = new Roster({ local: false, port: 8443 });
-customRoster.register('api.example.com', handler);
-await customRoster.start();
-console.log(customRoster.getUrl('api.example.com')); 
-// → https://api.example.com:8443
-```
-
-## 🔌 Cluster-Friendly API (init / attach)
-
-RosterServer can coexist with external cluster managers (sticky-session libraries, PM2 cluster, custom master/worker architectures) that already own the TCP socket and distribute connections. Instead of letting Roster create and bind servers, you initialize routing separately and wire it into your own server.
-
-### How It Works
-
-`roster.init()` loads sites, creates VirtualServers, and prepares dispatchers — but creates **no servers** and calls **no `.listen()`**. You then get handler functions to wire into any `http.Server` or `https.Server`.
-
-### Quick Example: Sticky-Session Worker
-
-```javascript
-import https from 'https';
 import Roster from 'roster-server';
 
 const roster = new Roster({
@@ -396,118 +41,265 @@ const roster = new Roster({
     greenlockStorePath: '/srv/greenlock.d'
 });
 
-await roster.init();
-
-// Create your own HTTPS server with Roster's SNI + routing
-const server = https.createServer({ SNICallback: roster.sniCallback() });
-roster.attach(server);
-
-// Master passes connections via IPC — worker never calls listen()
-process.on('message', (msg, connection) => {
-    if (msg === 'sticky-session:connection') {
-        server.emit('connection', connection);
-    }
-});
+await roster.start();
 ```
 
-### Production Pattern: Single Certificate Manager + Workers
+Standalone HTTPS opens port `80` for ACME challenges in addition to the configured HTTPS ports. Port `80` cannot be a production site port. Use `staging: true` when testing certificate issuance; staging certificates are not publicly trusted.
 
-For robust ACME behavior with cluster runtimes, run a single certificate manager process (primary) and keep workers in serving-only mode. This avoids challenge race conditions while keeping certificate lifecycle automatic.
+## Sites and routing
+
+```text
+www/
+├── example.com/index.cjs
+├── api.example.com/index.mjs
+├── static.example.com/index.html
+└── *.example.com/index.cjs
+```
+
+For each directory, discovery checks `index.js`, `index.mjs`, then `index.cjs`. If none exists, `index.html` enables static serving. `filename` changes the script basename; the static entry remains `index.html`. Match `.js` exports to the site's package module type, or use `.cjs`/`.mjs` explicitly.
+
+Discovery happens during `init()`. Register manual sites before initialization. Discovered sites use HTTPS port **443**, even when the instance's `port` is different; a discovered registration replaces a manual registration for the same domain and port. Loading new sites requires a new instance or process restart.
+
+### Site factory contract
+
+Export a **synchronous factory** `(virtualServer) => requestHandler`. The returned `(req, res)` handler may be asynchronous. Return an Express app directly; do not call `app.listen()` inside a factory.
+
+Basic site, saved as `www/example.com/index.cjs`:
 
 ```javascript
-// primary
-const certManager = new Roster({
-    email: 'admin@example.com',
-    greenlockStorePath: '/srv/greenlock.d',
-    wwwPath: '/srv/www'
-});
-certManager.register('example.com', () => (req, res) => res.end('manager'));
-await certManager.start();                    // enables ACME challenge lifecycle
-await certManager.ensureCertificate('example.com');
+module.exports = () => async (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Hello');
+};
+```
 
-// worker
-const workerRoster = new Roster({
+Express site, with Express installed in the consuming application:
+
+```javascript
+const express = require('express');
+
+module.exports = () => {
+    const app = express();
+    app.get('/', (req, res) => res.json({ ok: true }));
+    return app;
+};
+```
+
+The virtual server supports request/upgrade listener integration; it is not a separately listening TCP server or a process isolation boundary. Request listeners own their requests, including asynchronous responses. Roster does not invoke the returned handler just because a listener has not finished. Wrappers can capture the site's HTTP fallback through `server.listeners('request')`.
+
+Thrown or rejected request-handler errors produce a `500`, or destroy the response if headers were already sent.
+
+### Socket.IO and resource cleanup
+
+With Socket.IO installed in the consuming application:
+
+```javascript
+const { Server } = require('socket.io');
+
+module.exports = (server) => {
+    const io = new Server(server);
+    io.on('connection', socket => {
+        socket.on('chat:message', message => io.emit('chat:message', message));
+    });
+    server.onClose(() => new Promise(resolve => io.close(resolve)));
+
+    return (req, res) => res.end('Socket.IO site');
+};
+```
+
+Socket.IO handles its own endpoint and delegates other requests to the returned handler. No manual path exclusion is required. Use the public `io.path()` method if application code needs its configured path.
+
+### Manual registration and custom ports
+
+After creating `roster`, register factories before `init()` or `start()`:
+
+```javascript
+const site = () => (req, res) => res.end('API');
+roster.register('api.example.com', site);
+roster.register('api.example.com:8443', site);
+roster.register('*.example.com:8443', site);
+```
+
+A registration without an explicit port uses the instance's `port`. Exact hosts take precedence over wildcard matches. `*.example.com` does not match the apex `example.com`; register the apex separately if needed. Wildcard certificates require [DNS-01 configuration](#certificates-and-dns).
+
+Requests to `www` hosts redirect to the host without `www`, preserving the explicit port in the Host header. `getUrl(domain)` normalizes `www` and supports wildcard lookups. In local mode it returns `localhost` or a subdomain such as `api.localhost`, with the assigned port. In production it uses the instance's default port; it is not a per-port URL lookup for registrations made only on non-default ports, which can return `null`.
+
+### Static sites
+
+A directory with `index.html` and no entry script needs no JavaScript factory:
+
+- `GET` streams the requested file; `HEAD` reads metadata without reading the body.
+- `/` and directory requests serve the corresponding `index.html`.
+- Missing files return `404`; there is no SPA fallback. Unsupported methods return `405`.
+- Paths that resolve outside the site root are rejected. Content type is inferred from the file extension.
+
+Filesystem operations are asynchronous, and disconnected downloads close their file handles.
+
+## Startup and shutdown
+
+Concurrent `init()` calls share initialization, so each factory runs once per registered domain/port. Concurrent `start()` calls share startup. In standalone and local modes, `await roster.start()` waits for listeners to bind. Initialization or bind failures reject and clean up resources already initialized by the instance.
+
+Register `virtualServer.onClose(fn)` in a factory for timers, databases, queues, or other site-owned resources. Hooks may return Promises, run once, and run concurrently after active HTTP requests drain. Put dependent cleanup operations in the same async hook. This is separate from the virtual server's `close` event, which is emitted when shutdown begins so integrations can release long polling requests.
+
+`await roster.close()`:
+
+1. Stops accepting work and cancels Roster's renewal/retry timers.
+2. Closes listeners opened by `start()`, including ACME HTTP, and routed WebSockets; drains active HTTP requests and waits for pending certificate work.
+3. Runs site cleanup hooks. Individual failures do not prevent other hooks from running; failures are reported in an `AggregateError`.
+
+`closeTimeoutMs` (default `30000`) bounds the whole operation. At the deadline Roster destroys remaining owned connections and active routed responses, attempts cleanup hooks, and rejects with a timeout. It cannot forcibly interrupt an application Promise or an ACME operation already in progress.
+
+Closing is **idempotent and terminal**: repeated calls return the same Promise. Create a new instance after closure or failed initialization/startup. Roster does not install process signal handlers; connect shutdown to the application's lifecycle:
+
+```javascript
+async function shutdown() {
+    try {
+        await roster.close();
+    } catch (error) {
+        console.error(error);
+        process.exitCode = 1;
+    }
+}
+
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
+```
+
+## External servers and workers
+
+Use `init()` when your application or cluster manager owns the listener. It loads sites and invokes factories without binding ports. In production, it also generates certificate configuration and, unless `autoCertificates: false`, creates the certificate runtime and renewal timer.
+
+A serving-only worker with existing certificates:
+
+```javascript
+import Roster from 'roster-server';
+
+const roster = new Roster({
     email: 'admin@example.com',
-    greenlockStorePath: '/srv/greenlock.d',
     wwwPath: '/srv/www',
+    greenlockStorePath: '/srv/greenlock.d',
     autoCertificates: false
 });
-workerRoster.register('example.com', () => (req, res) => res.end('worker'));
-await workerRoster.init();
-const server = await workerRoster.createServingHttpsServer({ servername: 'example.com' });
-server.listen(4336);
+
+await roster.init();
+const server = await roster.createServingHttpsServer({ servername: 'example.com' });
+server.listen(8443);
 ```
 
-Reference implementation: `demo/https-cluster-configurable.js`.
+The caller owns this server's listen/error/close lifecycle. To wire an existing HTTP(S) server instead, call `roster.attach(server, { port: 443 })`. The `port` selects a routing table; it does not change the server's listening port. Attach request handling only where Roster should own dispatch. Repeating the same attachment is a no-op; attaching that server to a different routing port throws.
 
-### API Reference
+During shutdown, `roster.close()` drains its routed requests, closes its routed upgraded sockets, and removes only listeners added by `attach()`. It **does not close the external server**, including servers returned by the HTTPS helpers. Coordinate both closures in the owning application. Manually wired `requestHandler()`/`upgradeHandler()` listeners must also be removed by their owner.
 
-#### `roster.init()` → `Promise<Roster>`
+For multiple workers, keep certificate issuance in one manager process and use `autoCertificates: false` with `init()` in serving workers. The manager can use `start()` to provide ACME HTTP and `ensureCertificate()` before starting workers. Keep domain/certificate configuration consistent: `init()` still writes configuration even in serving-only mode. `start()` retains the standalone ACME lifecycle even if `autoCertificates` is false.
 
-Loads sites, generates SSL config (production), creates VirtualServers and initializes handlers. Idempotent — calling it twice is safe. Returns `this` for chaining.
+The legacy `cluster: true` launcher delegates process management to Greenlock. `close()` applies to the current Roster instance; it does not stop worker processes. External cluster managers should coordinate shutdown in each worker.
 
-#### `roster.requestHandler(port?)` → `(req, res) => void`
+## Certificates and DNS
 
-Returns the Host-header dispatch function for a given port (defaults to `defaultPort`). Handles www→non-www redirects, wildcard matching, and VirtualServer dispatch.
+The default DNS-01 integration is a wrapper around `acme-dns-01-cli`, with `propagationDelay: 120000`, `autoContinue: false`, and `dryRunDelay` matching propagation delay. Without an API provider, DNS challenges require manual TXT records. `dnsChallenge: false` disables this integration, not HTTPS itself.
 
-#### `roster.use(plugin)` → `Roster`
+Wildcard sites normally receive a separate wildcard certificate using DNS-01; apex/www use their regular certificate flow. `combineWildcardCerts: true` puts apex, www, and wildcard names on the primary certificate and requires DNS-01. `disableWildcard: true` ignores wildcard site registrations and discovery.
 
-Registers a synchronous request plugin and returns `this`. Plugins receive `(req, res, { host, domain })`; return `true` after sending a response to stop dispatch, or `false`/`undefined` to continue. Plugins run in registration order before redirects and site handlers.
-
-#### `roster.upgradeHandler(port?)` → `(req, socket, head) => void`
-
-Returns the WebSocket upgrade dispatcher for a given port. Routes upgrades to the correct VirtualServer.
-
-#### `roster.sniCallback()` → `(servername, callback) => void`
-
-Returns a TLS SNI callback. It resolves certificates from `greenlockStorePath` and, when `autoCertificates` is enabled (default), can issue missing certificates automatically. Not available in local mode.
-
-#### `roster.ensureCertificate(servername)` → `Promise<{ key, cert }>`
-
-Ensures a certificate exists for `servername`. With `autoCertificates` enabled (default), it issues missing certificates automatically and returns PEMs.
-
-#### `roster.loadCertificate(servername)` → `{ key, cert }`
-
-Loads an existing certificate from `greenlockStorePath` without issuing new certificates. Useful for serving-only workers.
-
-#### `roster.createManagedHttpsServer({ servername, port?, ensureCertificate?, tlsOptions? })` → `Promise<https.Server>`
-
-Creates an HTTPS server prewired with default cert, SNI callback, and request/upgrade routing. By default it ensures certificate issuance before returning.
-
-#### `roster.createServingHttpsServer({ servername, port?, tlsOptions? })` → `Promise<https.Server>`
-
-Convenience alias for serving-only workers. Equivalent to `createManagedHttpsServer(..., ensureCertificate: false)`.
-
-#### `roster.attach(server, { port }?)` → `Roster`
-
-Convenience method. Wires `requestHandler` and `upgradeHandler` onto `server.on('request', ...)` and `server.on('upgrade', ...)`. Returns `this` for chaining.
-
-### Standalone Mode (unchanged)
-
-`roster.start()` still works exactly as before — it calls `init()` internally, then creates and binds servers:
+For Linode, supply `LINODE_API_KEY` through the application's secret configuration and set `ROSTER_DNS_PROVIDER=linode`. A configured Linode key also selects that provider when no provider is specified. The wrapper creates/removes TXT records and checks DNS propagation. API failures can fall back to manual mode by default; for unattended operation that must fail instead, configure:
 
 ```javascript
-const roster = new Roster({ ... });
-await roster.start(); // full standalone mode, no changes needed
+const dnsChallenge = {
+    module: 'acme-dns-01-cli',
+    provider: 'linode',
+    dnsApiFallbackToManual: false
+};
 ```
 
-## 🧂 A Touch of Magic
+Pass this as the constructor's `dnsChallenge` option. To use another provider, install its Greenlock DNS plugin in the consuming application and supply its module name and provider options. Configure DNS timing on that object with `propagationDelay`, `dryRunDelay`, `dnsPollIntervalMs`, and `dnsPollTimeoutMs`; the wrapper's polling interval defaults to `15000` ms.
 
-You might be thinking, "But setting up HTTPS and virtual hosts is supposed to be complicated and time-consuming!" Well, not anymore. With RosterServer, you can get back to writing code that matters, like defending Earth from alien invaders! 👾👾👾
+Roster's file-based SNI resolvers cache TLS contexts and detect changed certificate files through metadata, including updates from another process. Concurrent requests for the same certificate name share loads and checks. Standalone startup reuses the initialized certificate runtime and Roster's cancellable renewal loop. Loading an existing certificate does not itself force renewal.
 
+## Configuration reference
 
-## 🤝 Contributing
+Pass operational settings through the constructor, using the consuming application's configuration source. Prefer absolute `wwwPath` and `greenlockStorePath`. `basePath` supplies their defaults; it does not rebase explicitly supplied relative paths.
 
-Feel free to submit issues or pull requests. Or don't. I'm not your boss. 😜
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `email` | `admin@example.com` | Replace with the real certificate contact. |
+| `basePath` | Derived from package location | Default parent for `www` and `greenlock.d`; set explicitly when relying on it. |
+| `wwwPath` | `basePath/www` | Discovered sites. |
+| `greenlockStorePath` | `basePath/greenlock.d` | Certificate files and generated configuration. |
+| `filename` | `index` | Script entry basename, without extension. |
+| `local` | `false` | Local HTTP mode with assigned ports and no certificates. |
+| `port` | `443` | Default port for manual registrations and routing helpers. |
+| `hostname` | `::` | Production bind address; local mode uses `localhost`. |
+| `minLocalPort`, `maxLocalPort` | `4000`, `9999` | Inclusive local assignment range. |
+| `staging` | `false` | ACME staging environment. |
+| `autoCertificates` | `true` | Certificate runtime during `init()`; disable for serving-only workers. |
+| `certificateRenewIntervalMs` | `43200000` (12h) | Roster renewal check interval; minimum `60000`. |
+| `closeTimeoutMs` | `30000` | Positive finite total shutdown deadline. |
+| `tlsMinVersion`, `tlsMaxVersion` | `TLSv1.2`, `TLSv1.3` | Protocol limits for created HTTPS servers. |
+| `skipLocalCheck` | `true` | Skips Greenlock dry-run/local challenge checks. |
+| `dnsChallenge` | CLI wrapper | DNS-01 options or `false`; see [certificates](#certificates-and-dns). |
+| `disableWildcard`, `combineWildcardCerts` | `false`, `false` | Wildcard registration and certificate behavior. |
+| `cluster` | `false` | Legacy Greenlock-managed cluster launcher. |
 
-If you find any issues or have suggestions for improvement, please open an issue or submit a pull request on the [GitHub repository](https://github.com/clasen/RosterServer).
+## API reference
 
-## 🙏 Acknowledgments 
+| Method | Contract |
+| --- | --- |
+| `register(domain, factory)` | Register before initialization; accepts `domain:port` and wildcard domains. Returns `Roster`. |
+| `use(plugin)` | Add a synchronous request plugin. Returns `Roster`. |
+| `init()` | `Promise<Roster>`; prepare routing and factories without listening. |
+| `start()` | Start standalone/local listeners; await readiness. |
+| `close()` | `Promise<void>`; drain and clean up the instance. |
+| `getUrl(domain)` | URL or `null`; local assignment is available after startup. See [routing](#manual-registration-and-custom-ports) for port limitations. |
+| `requestHandler(port?)` | HTTP dispatcher for the selected routing port. Requires `init()`. |
+| `upgradeHandler(port?)` | WebSocket upgrade dispatcher. Requires `init()`. |
+| `attach(server, { port }?)` | Add both dispatchers to a caller-owned server. Requires `init()`; returns `Roster`. |
+| `sniCallback()` | TLS SNI callback. Requires production-mode `init()`. |
+| `ensureCertificate(servername)` | `Promise<{ key, cert }>`; load existing PEMs or issue missing ones when enabled. Requires production-mode `init()`. |
+| `loadCertificate(servername)` | Synchronously load `{ key, cert }` without issuance. Requires production-mode `init()`. |
+| `createManagedHttpsServer({ servername, port?, ensureCertificate?, tlsOptions? })` | `Promise<https.Server>` with certificates and dispatchers; does not listen. Certificate assurance defaults to `true`. Requires production-mode `init()`. |
+| `createServingHttpsServer({ servername, port?, tlsOptions? })` | Same helper with `ensureCertificate: false`; set `autoCertificates: false` for a serving-only instance. |
+| `virtualServer.onClose(fn)` | Register a cleanup hook; returns the virtual server. See [shutdown](#startup-and-shutdown). |
 
-- [Node.js](https://nodejs.org/) - JavaScript runtime
-- [Greenlock](https://git.coolaj86.com/coolaj86/greenlock.js) - Fully-featured ACME client
+## Request plugins
 
-## 📄 License
+Plugins run before redirects and site dispatch. They receive `(req, res, { host, domain })`; return `true` after handling the response, or `false`/`undefined` to continue. Plugins must be synchronous. Thrown errors or Promise returns produce a `500` response.
+
+Enable the optional scanner blocker before startup:
+
+```javascript
+import { createScannerBlocker } from 'roster-server/plugins/scanner-blocker.js';
+
+roster.use(createScannerBlocker());
+```
+
+The blocker rejects common PHP, WordPress, repository, and sensitive-file probes with `404`. Defaults: a `60000` ms strike window, `3` strikes, a `900000` ms ban, `10000` tracked clients, and `trustProxy: false`. Configure `windowMs`, `strikeThreshold`, `banDurationMs`, and `maxTrackedClients` on the plugin. State is bounded, in memory, and per process.
+
+Enable `trustProxy` only behind a trusted proxy that overwrites `X-Forwarded-For`. The optional synchronous `onBlock(event)` callback can integrate the application's logging or enforcement; it does not itself provide shared or persistent bans.
+
+## Troubleshooting and runtime limits
+
+| Symptom | Check |
+| --- | --- |
+| Startup rejects with a port error | Free the conflicting port or change the configured range/port, then create a new instance. Standalone HTTPS also needs port 80. |
+| A site returns `404` | Check the domain, routing port, entry filename, module type, and factory export. Discovered sites stay on 443. |
+| A site import fails with a relative path | Pass an absolute `wwwPath`; explicit paths are not rebased onto `basePath`. |
+| Static deep links return `404` | There is no SPA fallback; use a site handler when that behavior is required. |
+| Socket.IO falls through or double-responds | Attach it to the supplied virtual server, return the ordinary HTTP handler, and let Socket.IO own its endpoint. |
+| Certificates are missing in a worker | Ensure the manager has issued them into the same store before worker startup. `init()` alone does not bind ACME HTTP. |
+| Shutdown times out | Inspect the aggregated errors and site hooks, active requests, and pending certificate operations. |
+
+Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun. In **Bun 1.3.4**, the tested `node:https` serving helper did not invoke `SNICallback`, and changing certificate files did not replace the served default certificate. This also occurred with the previous synchronous resolver; do not assume Node's SNI reload behavior on that runtime.
+
+## Agent skill and development
+
+The [RosterServer skill](skills/roster-server/SKILL.md) guides application integration:
+
+```sh
+npx skills add https://github.com/clasen/RosterServer --skill roster-server
+```
+
+Contributors can run `pnpm test` for the Node test suite. Examples live in [demo](demo); they are separate from the published API reference above.
+
+## License
 
 The MIT License (MIT)
 
@@ -518,7 +310,3 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
----
-
-Happy hosting! 🎈

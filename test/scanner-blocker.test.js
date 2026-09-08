@@ -191,11 +191,8 @@ describe('Roster request plugins', () => {
         asyncRoster.use(async () => false);
         asyncRoster.register('example.com', () => () => {});
         await asyncRoster.init();
-        assert.throws(() => {
-            asyncRoster.requestHandler()(
-                { headers: { host: 'example.com' }, url: '/', socket: {} },
-                { writeHead() {}, end() {} }
-            );
-        }, /must be synchronous/);
+        const result = invoke(asyncRoster.requestHandler(), { headers: { host: 'example.com' } });
+        assert.strictEqual(result.statusCode, 500);
+        assert.strictEqual(result.body, 'Internal Server Error');
     });
 });

@@ -20,7 +20,7 @@ GLE.init = function(fn) {
     // See https://git.coolaj86.com/coolaj86/greenlock-express.js/issues/80
     if (fn && false !== fn.cluster && cluster.isWorker) {
         // ignore the init function and launch the worker
-        return require("./worker.js").create();
+        return require("./worker.js").create(fn);
     }
 
     var opts;

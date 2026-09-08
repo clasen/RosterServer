@@ -8,7 +8,7 @@ var Servers = require("./servers.js");
 Single.create = function(opts) {
     var greenlock = require("./greenlock-shim.js").create(opts);
 
-    var servers = Servers.create(greenlock);
+    var servers = Servers.create(greenlock, opts.onServerError);
 
     var single = {
         ready: function(fn) {

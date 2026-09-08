@@ -9,12 +9,13 @@ var sni = require("./sni.js");
 var cluster = require("cluster");
 var log = require("lemonlog")("greenlock-servers");
 
-Servers.create = function(greenlock) {
+Servers.create = function(greenlock, onError) {
     var servers = {};
     var _httpServer;
     var _httpsServer;
 
     function startError(e) {
+        if (onError) return onError(e);
         explainError(e);
         process.exit(1);
     }
