@@ -131,6 +131,29 @@ it('routes each SNI host to its own process with the client address and headers 
     assert.equal(redirect.headers.location, 'https://a.example.com/path');
 });
 
+it('keeps serving in the same worker when a connection arrives without a socket', { timeout: 20000 }, async t => {
+    const { roster, port } = await startProduction(t, {
+        'disconnected.example.com': `${REPORT_SITE}
+            process.on('message', message => {
+                if (message.type === 'connection' && message.head === '') process.send({ type: 'observed' });
+            });`
+    }, { certificates: ['disconnected.example.com'] });
+    const first = JSON.parse((await get(port, 'disconnected.example.com')).body);
+    const child = roster._isolatedSites[0].child;
+    const observed = Promise.race([
+        once(child, 'message').then(([message]) => message.type),
+        once(child, 'exit').then(() => 'exited')
+    ]);
+    await new Promise((resolve, reject) => {
+        child.send({ type: 'connection', port: 443, head: '' }, error => error ? reject(error) : resolve());
+    });
+    assert.equal(await observed, 'observed', 'worker exited on a connection without a socket');
+    const response = await get(port, 'disconnected.example.com');
+    assert.equal(response.status, 200);
+    assert.equal(JSON.parse(response.body).pid, first.pid);
+    assert.equal(child.exitCode, null);
+});
+
 it('keeps serving other sites while one blocks its event loop', { timeout: 20000 }, async t => {
     const { port } = await startProduction(t, {
         'busy.example.com': `module.exports = () => (req, res) => {
