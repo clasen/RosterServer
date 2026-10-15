@@ -1,6 +1,6 @@
 # 👾 RosterServer
 
-Host multiple domains from one Node.js process, with HTTPS certificates managed through Greenlock, Express and Socket.IO integration, static file serving, and local HTTP development. Each site receives a virtual server for request and upgrade listeners; applications share the process.
+Host multiple domains behind one Node.js entry point, with HTTPS certificates managed through Greenlock, Express and Socket.IO integration, static file serving, and local HTTP development. Each site receives a virtual server for request and upgrade listeners. By default every site directory runs in its own process, so a busy, blocked, or crashed site does not take the others down; see [site isolation](#site-isolation).
 
 ## Installation
 
@@ -85,7 +85,7 @@ module.exports = () => {
 };
 ```
 
-The virtual server supports request/upgrade listener integration; it is not a separately listening TCP server or a process isolation boundary. Request listeners own their requests, including asynchronous responses. Roster does not invoke the returned handler just because a listener has not finished. Wrappers can capture the site's HTTP fallback through `server.listeners('request')`.
+The virtual server supports request/upgrade listener integration; it is not a separately listening TCP server. Process isolation comes from [site isolation](#site-isolation), not from the virtual server. Request listeners own their requests, including asynchronous responses. Roster does not invoke the returned handler just because a listener has not finished. Wrappers can capture the site's HTTP fallback through `server.listeners('request')`.
 
 Thrown or rejected request-handler errors produce a `500`, or destroy the response if headers were already sent.
 
@@ -120,6 +120,12 @@ roster.register('api.example.com:8443', site);
 roster.register('*.example.com:8443', site);
 ```
 
+Instead of a factory, `register()` also accepts a site directory, loaded like a discovered site. A directory registration can run in an isolated process, and every domain registered with the same directory, including the discovered one, shares that process:
+
+```javascript
+roster.register('en.example.com', path.join(wwwPath, 'example.com'));
+```
+
 A registration without an explicit port uses the instance's `port`. Exact hosts take precedence over wildcard matches. `*.example.com` does not match the apex `example.com`; register the apex separately if needed. Wildcard certificates require [DNS-01 configuration](#certificates-and-dns).
 
 Requests to `www` hosts redirect to the host without `www`, preserving the explicit port in the Host header. `getUrl(domain)` normalizes `www` and supports wildcard lookups. In local mode it returns `localhost` or a subdomain such as `api.localhost`, with the assigned port. In production it uses the instance's default port; it is not a per-port URL lookup for registrations made only on non-default ports, which can return `null`.
@@ -134,6 +140,49 @@ A directory with `index.html` and no entry script needs no JavaScript factory:
 - Paths that resolve outside the site root are rejected. Content type is inferred from the file extension.
 
 Filesystem operations are asynchronous, and disconnected downloads close their file handles.
+
+## Site isolation
+
+`start()` runs each site directory in its own Node.js process. This applies to discovered `www/` sites and to directories passed to `register()`. One process serves every domain and port registered with that directory, so a site with SQLite, files written by lowdb, cron jobs, or internal servers never runs twice. Disable isolation with `isolation: false`.
+
+The main process keeps the listeners, certificate issuance and renewal (ACME, SNI, wildcard), port 80, and shutdown. For each HTTPS connection it reads only the TLS ClientHello and passes the raw socket to the process serving that SNI host. That process terminates TLS and handles requests, WebSocket upgrades, request plugins, and `onClose` hooks. The socket is the client's own connection, so `req.socket.remoteAddress` and all headers arrive unchanged. A TLS handshake does not use the main process's CPU or event loop. In local mode, each isolated process listens on its own assigned port.
+
+These sites stay in the main process:
+
+- A factory function passed to `register()`, because a function cannot move to another process. Register the site directory instead to isolate it.
+- A site whose entry module the main process already loaded with `require()`. Isolating it would create a second instance. This check cannot see ESM modules imported by the application; do not import an isolated site's module from the server script.
+- Connections without SNI, or for a host no isolated site serves.
+
+Roster logs the sites that are not isolated at startup.
+
+A crashed isolated process is restarted after `isolation.restartDelayMs`, and the other sites keep serving. While it is down, its connections are refused. If its startup fails, `start()` rejects, as it does for an in-process factory error. Once more than `isolation.backlog` connections are waiting for a site process, new connections to that site are dropped. A client that sends no ClientHello within `isolation.helloTimeoutMs` is disconnected.
+
+```javascript
+const roster = new Roster({
+    isolation: { restartDelayMs: 1000, backlog: 511, helloTimeoutMs: 10000 }
+});
+```
+
+When at least one site is isolated, request plugins added with `use()` before `start()` are recreated in every isolated process. Plugin state, such as scanner-blocker bans, is therefore per site. A plugin can be recreated only if it carries a `Roster.pluginSource` descriptor whose options are JSON-serializable; otherwise `start()` rejects. `createScannerBlocker()` provides one unless its options include functions such as `onBlock`. For a custom plugin:
+
+```javascript
+// my-plugin.cjs
+const Roster = require('roster-server');
+
+function createMyPlugin(options) {
+    const plugin = (req, res, context) => false;
+    plugin[Roster.pluginSource] = { module: __filename, export: 'createMyPlugin', options };
+    return plugin;
+}
+
+module.exports = { createMyPlugin };
+```
+
+On `close()`, or a handled signal, each isolated process drains its requests, runs its `onClose` hooks, and exits. Hook errors from those processes appear in the same `AggregateError`. When `closeTimeoutMs` expires, Roster kills the remaining isolated processes. Isolated processes ignore `SIGINT` and `SIGTERM` and wait for the main process, so a signal sent to the whole process group by a terminal or process manager does not cut their drain short. If the main process exits without closing, each isolated process closes itself.
+
+Isolation needs a Roster-owned listener, so it applies only when `start()` initializes the instance. Calling `init()` yourself keeps every site in the current process for `attach()` and the other external-server helpers. Isolation is not available on Bun, whose HTTPS server cannot adopt a passed socket; there, Roster logs a warning and serves every site in the main process. Isolation cannot be combined with the legacy `cluster: true` launcher, which disables it by default.
+
+Each isolated process loads Node.js and its site, so memory use grows with the number of site directories. Code that runs when a site's module loads runs in that site's process, not in the main process.
 
 ## Startup and shutdown
 
@@ -203,7 +252,7 @@ During shutdown, `roster.close()` drains its routed requests, closes its routed 
 
 For multiple workers, keep certificate issuance in one manager process and use `autoCertificates: false` with `init()` in serving workers. The manager can use `start()` to provide ACME HTTP and `ensureCertificate()` before starting workers. Keep domain/certificate configuration consistent: `init()` still writes configuration even in serving-only mode. `start()` retains the standalone ACME lifecycle even if `autoCertificates` is false.
 
-The legacy `cluster: true` launcher delegates process management to Greenlock. `close()` applies to the current Roster instance; it does not stop worker processes. External cluster managers should coordinate shutdown in each worker.
+The legacy `cluster: true` launcher delegates process management to Greenlock and turns off [site isolation](#site-isolation). `close()` applies to the current Roster instance; it does not stop worker processes. External cluster managers should coordinate shutdown in each worker.
 
 ## Certificates and DNS
 
@@ -245,6 +294,7 @@ Pass operational settings through the constructor, using the consuming applicati
 | `certificateRenewIntervalMs` | `43200000` (12h) | Roster renewal check interval; minimum `60000`. |
 | `closeTimeoutMs` | `30000` | Positive finite total shutdown deadline. |
 | `handleSignals` | `false` | Close this instance on `SIGINT`/`SIGTERM`; does not force process exit. |
+| `isolation` | `true` (`false` with `cluster`) | One process per site directory under `start()`; `false` or `{ restartDelayMs, backlog, helloTimeoutMs }` (defaults `1000`, `511`, `10000`). See [site isolation](#site-isolation). |
 | `tlsMinVersion`, `tlsMaxVersion` | `TLSv1.2`, `TLSv1.3` | Protocol limits for created HTTPS servers. |
 | `skipLocalCheck` | `true` | Skips Greenlock dry-run/local challenge checks. |
 | `dnsChallenge` | CLI wrapper | DNS-01 options or `false`; see [certificates](#certificates-and-dns). |
@@ -255,7 +305,7 @@ Pass operational settings through the constructor, using the consuming applicati
 
 | Method | Contract |
 | --- | --- |
-| `register(domain, factory)` | Register before initialization; accepts `domain:port` and wildcard domains. Returns `Roster`. |
+| `register(domain, factory \| siteDirectory)` | Register before initialization; accepts `domain:port` and wildcard domains. A site directory can be isolated; a factory runs in the main process. Returns `Roster`. |
 | `use(plugin)` | Add a synchronous request plugin. Returns `Roster`. |
 | `init()` | `Promise<Roster>`; prepare routing and factories without listening. |
 | `start()` | Start standalone/local listeners; await readiness. |
@@ -270,6 +320,7 @@ Pass operational settings through the constructor, using the consuming applicati
 | `createManagedHttpsServer({ servername, port?, ensureCertificate?, tlsOptions? })` | `Promise<https.Server>` with certificates and dispatchers; does not listen. Certificate assurance defaults to `true`. Requires production-mode `init()`. |
 | `createServingHttpsServer({ servername, port?, tlsOptions? })` | Same helper with `ensureCertificate: false`; set `autoCertificates: false` for a serving-only instance. |
 | `virtualServer.onClose(fn)` | Register a cleanup hook; returns the virtual server. See [shutdown](#startup-and-shutdown). |
+| `Roster.pluginSource` | Symbol for a request plugin's `{ module, export, options }` descriptor. See [site isolation](#site-isolation). |
 
 ## Request plugins
 
@@ -283,7 +334,7 @@ import { createScannerBlocker } from 'roster-server/plugins/scanner-blocker.js';
 roster.use(createScannerBlocker());
 ```
 
-The blocker rejects common PHP, WordPress, repository, and sensitive-file probes with `404`. Defaults: a `60000` ms strike window, `3` strikes, a `900000` ms ban, `10000` tracked clients, and `trustProxy: false`. Configure `windowMs`, `strikeThreshold`, `banDurationMs`, and `maxTrackedClients` on the plugin. State is bounded, in memory, and per process.
+The blocker rejects common PHP, WordPress, repository, and sensitive-file probes with `404`. Defaults: a `60000` ms strike window, `3` strikes, a `900000` ms ban, `10000` tracked clients, and `trustProxy: false`. Configure `windowMs`, `strikeThreshold`, `banDurationMs`, and `maxTrackedClients` on the plugin. State is bounded, in memory, and per process, so each isolated site keeps its own bans.
 
 Enable `trustProxy` only behind a trusted proxy that overwrites `X-Forwarded-For`. The optional synchronous `onBlock(event)` callback can integrate the application's logging or enforcement; it does not itself provide shared or persistent bans.
 

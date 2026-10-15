@@ -116,7 +116,7 @@ function createScannerBlocker(options = {}) {
         if (onBlock) onBlock(details);
     }
 
-    return function scannerBlocker(req, res, context = {}) {
+    function scannerBlocker(req, res, context = {}) {
         const timestamp = clock();
         const ip = clientIp(req, trustProxy);
         let state = ip ? clients.get(ip) : null;
@@ -163,7 +163,15 @@ function createScannerBlocker(options = {}) {
             bannedUntil
         });
         return true;
+    }
+
+    // Lets Roster recreate this plugin, with its own ban state, in each isolated site process.
+    scannerBlocker[Symbol.for('roster-server.plugin-source')] = {
+        module: __filename,
+        export: 'createScannerBlocker',
+        options
     };
+    return scannerBlocker;
 }
 
 module.exports = { createScannerBlocker };

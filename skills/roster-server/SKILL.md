@@ -52,7 +52,7 @@ module.exports = (server) => {
 
 Socket.IO wraps the request listeners and captures the returned handler as its fallback. Do not add a manual endpoint exclusion to that handler; use `io.path()` when application code needs the path. Do not use `io.opts.path`.
 
-A virtual request listener owns its request even before it ends the response. Roster does not infer that an asynchronous listener declined the request. Thrown/rejected handler errors produce 500 or destroy an already-started response. Virtual servers share a process; they are not process isolation boundaries.
+A virtual request listener owns its request even before it ends the response. Roster does not infer that an asynchronous listener declined the request. Thrown/rejected handler errors produce 500 or destroy an already-started response. Virtual servers are not process boundaries. `start()` runs each site directory in its own process unless `isolation: false` is set. Factories passed to `register()` stay in the main process; register a site directory to isolate one.
 
 ## Shutdown
 

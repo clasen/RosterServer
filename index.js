@@ -2,14 +2,37 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const tls = require('tls');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
-const { resolveSiteApp } = require('./lib/resolve-site-app.js');
+const { locateSiteEntry, resolveSiteApp } = require('./lib/resolve-site-app.js');
+const { IsolatedSite } = require('./lib/isolated-site.js');
+const { parseClientHello } = require('./lib/client-hello.js');
 const log = require('lemonlog')('roster');
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'];
+// A request plugin carrying { module, export, options } under this key can be recreated in isolated site processes.
+const PLUGIN_SOURCE = Symbol.for('roster-server.plugin-source');
+
+function isJsonValue(value) {
+    if (value === null || ['string', 'number', 'boolean', 'undefined'].includes(typeof value)) return true;
+    if (Array.isArray(value)) return value.every(isJsonValue);
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+    return Object.values(value).every(isJsonValue);
+}
+
+function isolatedPluginSource(plugin) {
+    const source = plugin[PLUGIN_SOURCE];
+    if (!source || typeof source.module !== 'string' || typeof source.export !== 'string' || !isJsonValue(source.options)) {
+        throw new Error(
+            `Request plugin ${plugin.name || '(anonymous)'} cannot be recreated in isolated site processes. ` +
+            'Attach a Roster.pluginSource descriptor with JSON-serializable options, or set isolation: false'
+        );
+    }
+    return { module: source.module, export: source.export, options: source.options };
+}
 
 function requestError(error, res) {
     log.error('Request handler failed:', error?.message || error);
@@ -272,6 +295,27 @@ class Roster {
         this.greenlockStorePath = options.greenlockStorePath || path.join(basePath, 'greenlock.d');
         this.staging = options.staging || false;
         this.cluster = options.cluster || false;
+        const isolation = options.isolation ?? !this.cluster;
+        if (typeof isolation !== 'boolean' && (typeof isolation !== 'object' || isolation === null)) {
+            throw new TypeError('isolation must be a boolean or an options object');
+        }
+        if (isolation && this.cluster) {
+            throw new Error('isolation cannot be combined with cluster: true');
+        }
+        this.isolation = isolation ? {
+            restartDelayMs: 1000,
+            backlog: 511,
+            helloTimeoutMs: 10000,
+            ...(isolation === true ? {} : isolation)
+        } : null;
+        for (const [name, value] of Object.entries(this.isolation || {})) {
+            if (!Number.isFinite(value) || value <= 0) {
+                throw new TypeError(`isolation.${name} must be a positive finite number`);
+            }
+        }
+        this._isolate = false;
+        this._isolatedSites = [];
+        this._isolatedRoutes = {};
         this.local = options.local || false;
         this.domains = [];
         this.sites = {};
@@ -382,7 +426,9 @@ class Roster {
 
             let resolved;
             try {
-                resolved = await resolveSiteApp(domainPath, { filename: this.filename });
+                resolved = this._isolate
+                    ? this._locateSite(domainPath)
+                    : await resolveSiteApp(domainPath, { filename: this.filename });
             } catch (err) {
                 log.warn(`⚠️  Error loading site in ${domainPath}:`, err);
                 continue;
@@ -414,6 +460,42 @@ class Roster {
                     this.sites[siteKeyForDomain(d)] = siteApp;
                 });
                 log.info(`(✔) Loaded site: https://${domain}${type === 'static' ? ' (static)' : ''}`);
+            }
+        }
+    }
+
+    // An isolated site is recorded by its directory and loaded only by its own process.
+    _locateSite(domainPath) {
+        const entry = locateSiteEntry(domainPath, { filename: this.filename });
+        return entry ? { siteApp: domainPath, type: entry.type } : null;
+    }
+
+    _isLoadedInProcess(sitePath) {
+        const entry = locateSiteEntry(sitePath, { filename: this.filename });
+        if (!entry || entry.type !== 'js') return false;
+        return Boolean(require.cache[entry.path] || require.cache[fs.realpathSync(entry.path)]);
+    }
+
+    // Load site directories that stay in this process; the rest keep their path for an isolated process.
+    async _resolveSiteSources() {
+        const sitePaths = new Set(Object.values(this.sites).filter(source => typeof source === 'string'));
+        for (const sitePath of sitePaths) {
+            this._assertOpen();
+            if (this._isolate) {
+                if (!this._isLoadedInProcess(sitePath)) continue;
+                log.warn(`⚠️  ${sitePath} is already loaded by the main process; serving it there so it never runs twice`);
+            }
+            let resolved = null;
+            try {
+                resolved = await resolveSiteApp(sitePath, { filename: this.filename });
+            } catch (err) {
+                log.warn(`⚠️  Error loading site in ${sitePath}:`, err);
+            }
+            this._assertOpen();
+            for (const [key, source] of Object.entries(this.sites)) {
+                if (source !== sitePath) continue;
+                if (resolved) this.sites[key] = resolved.siteApp;
+                else delete this.sites[key];
             }
         }
     }
@@ -622,8 +704,13 @@ class Roster {
         if (!domainString) {
             throw new Error('Domain is required');
         }
-        if (typeof requestHandler !== 'function') {
-            throw new Error('requestHandler must be a function');
+        if (typeof requestHandler === 'string') {
+            requestHandler = path.resolve(requestHandler);
+            if (!locateSiteEntry(requestHandler, { filename: this.filename })) {
+                throw new Error(`No index file (js/mjs/cjs or index.html) found in ${requestHandler}`);
+            }
+        } else if (typeof requestHandler !== 'function') {
+            throw new Error('requestHandler must be a function or a site directory path');
         }
 
         const { domain, port } = this.parseDomainWithPort(domainString);
@@ -800,7 +887,7 @@ class Roster {
         this._sitesByPort = {};
         for (const [hostKey, siteApp] of Object.entries(this.sites)) {
             this._assertOpen();
-            if (hostKey.startsWith('www.')) continue;
+            if (hostKey.startsWith('www.') || typeof siteApp !== 'function') continue;
             const { domain, port } = this.parseDomainWithPort(hostKey);
             if (!this._sitesByPort[port]) {
                 this._sitesByPort[port] = {
@@ -825,6 +912,104 @@ class Roster {
                 this._sitesByPort[port].appHandlers[`www.${domain}`] = appHandler;
             }
         }
+    }
+
+    // Sites left with a directory source after _resolveSiteSources get one process per directory.
+    _planIsolatedSites() {
+        if (!this._isolate) return;
+        const keysBySitePath = new Map();
+        for (const [key, source] of Object.entries(this.sites)) {
+            if (typeof source !== 'string') continue;
+            if (!keysBySitePath.has(source)) keysBySitePath.set(source, []);
+            keysBySitePath.get(source).push(key);
+        }
+        const shared = Object.keys(this.sites).filter(key => !key.startsWith('www.') && typeof this.sites[key] === 'function');
+        if (shared.length > 0) {
+            log.warn(`⚠️  Not isolated, served by the main process: ${shared.join(', ')}`);
+        }
+        if (keysBySitePath.size === 0) return;
+
+        const plugins = this.plugins.map(isolatedPluginSource);
+        const options = {
+            local: this.local,
+            port: this.defaultPort,
+            filename: this.filename,
+            greenlockStorePath: this.greenlockStorePath,
+            tlsMinVersion: this.tlsMinVersion,
+            tlsMaxVersion: this.tlsMaxVersion,
+            closeTimeoutMs: this.closeTimeoutMs
+        };
+        const sitesByPath = new Map();
+        for (const [sitePath, keys] of keysBySitePath) {
+            const site = new IsolatedSite({
+                name: path.basename(sitePath),
+                config: { path: sitePath, keys, options, plugins },
+                isolation: this.isolation,
+                issueCertificate: servername => this._checkCertificate(servername)
+            });
+            sitesByPath.set(sitePath, site);
+            this._isolatedSites.push(site);
+        }
+
+        const isolatedPorts = new Set([...keysBySitePath.values()].flat().map(key => this.parseDomainWithPort(key).port));
+        for (const [key, source] of Object.entries(this.sites)) {
+            if (key.startsWith('www.')) continue;
+            const { domain, port } = this.parseDomainWithPort(key);
+            if (!isolatedPorts.has(port)) continue;
+            const routes = this._isolatedRoutes[port] ??= { exact: new Map(), wildcards: [] };
+            const site = sitesByPath.get(source) || null;
+            if (domain.startsWith('*.')) routes.wildcards.push([domain, site]);
+            else routes.exact.set(domain, site);
+        }
+    }
+
+    // Same precedence as getHandlerForPortData: exact host, then wildcards in registration order.
+    _isolatedSiteFor(routes, servername) {
+        const domain = servername.startsWith('www.') ? servername.slice(4) : servername;
+        if (routes.exact.has(domain)) return routes.exact.get(domain);
+        const wildcard = routes.wildcards.find(([pattern]) => hostMatchesWildcard(domain, pattern));
+        return wildcard ? wildcard[1] : null;
+    }
+
+    // Read the TLS ClientHello and hand the raw socket to the process serving its SNI host.
+    _route(socket, port, routes, server) {
+        let head = Buffer.alloc(0);
+        socket.setTimeout(this.isolation.helloTimeoutMs, () => socket.destroy());
+        socket.on('error', () => socket.destroy());
+        const read = chunk => {
+            head = Buffer.concat([head, chunk]);
+            const servername = parseClientHello(head);
+            if (servername === undefined) return;
+            socket.removeListener('data', read);
+            socket.pause();
+            socket.setTimeout(0);
+            const site = servername && this._isolatedSiteFor(routes, servername);
+            if (site) {
+                site.handoff(port, head, socket);
+                return;
+            }
+            socket.unshift(head);
+            server.emit('connection', socket);
+        };
+        socket.on('data', read);
+    }
+
+    _listenSite(server, port) {
+        const routes = this._isolatedRoutes[port];
+        if (!routes) {
+            this.portServers[port] = server;
+            return this._listen(server, port, this.hostname);
+        }
+        this._ownedServers.add(server);
+        const router = net.createServer(socket => this._route(socket, port, routes, server));
+        this.portServers[port] = router;
+        return this._listen(router, port, this.hostname);
+    }
+
+    async _startIsolatedSites() {
+        this._assertOpen();
+        await Promise.all(this._isolatedSites.map(site => site.start()));
+        this._assertOpen();
     }
 
     _createDispatcher(portData) {
@@ -1125,6 +1310,7 @@ class Roster {
     async _initialize() {
         await this.loadSites();
         this._assertOpen();
+        await this._resolveSiteSources();
         if (!this.local) {
             this.generateConfigJson();
             if (this.autoCertificates) {
@@ -1132,6 +1318,7 @@ class Roster {
             }
         }
         this._initSiteHandlers();
+        this._planIsolatedSites();
         this._assertOpen();
         if (!this.local) {
             this._initSniResolver();
@@ -1208,7 +1395,9 @@ class Roster {
             timer = setTimeout(() => {
                 for (const res of this._responses) res.destroy();
                 for (const socket of this._sockets) socket.destroy();
-                for (const server of this._ownedServers) server.closeAllConnections();
+                // Isolation routers are plain TCP servers; their sockets are in _sockets.
+                for (const server of this._ownedServers) server.closeAllConnections?.();
+                for (const site of this._isolatedSites) site.kill();
                 reject(timeoutError);
             }, this.closeTimeoutMs);
         });
@@ -1240,7 +1429,7 @@ class Roster {
                         if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') errors.push(error);
                         resolve();
                     });
-                    server.closeIdleConnections();
+                    server.closeIdleConnections?.();
                 } catch (error) {
                     errors.push(error);
                     resolve();
@@ -1254,8 +1443,11 @@ class Roster {
                 try { server.close(); } catch (error) { errors.push(error); }
             }
             for (const socket of this._upgradedSockets) socket.destroy();
+            const isolated = this._isolatedSites.map(site => site.close().then(siteErrors => {
+                errors.push(...siteErrors);
+            }));
             await wait(Promise.all([
-                ...closing, ...draining,
+                ...closing, ...draining, ...isolated,
                 Promise.allSettled([...this._certificateChecks.values(), ...this._contextLoads.values()])
             ]));
             if (isBunRuntime) {
@@ -1376,11 +1568,11 @@ class Roster {
     async startLocalMode() {
         this.domainPorts = {};
 
-        for (const portData of Object.values(this._sitesByPort)) {
+        for (const [sitePort, portData] of Object.entries(this._sitesByPort)) {
             for (const [domain, virtualServer] of Object.entries(portData.virtualServers)) {
                 if (domain.startsWith('www.')) continue;
 
-                const port = this.assignPortToDomain(domain);
+                const port = this.assignPortToDomain(domain, Number(sitePort));
                 this.domainPorts[domain] = port;
 
                 const appHandler = portData.appHandlers[domain];
@@ -1414,13 +1606,32 @@ class Roster {
             }
         }
 
-        log.info(`(✔) Started ${Object.keys(this.portServers).length} sites in local mode`);
+        for (const site of this._isolatedSites) {
+            for (const key of site.config.keys) {
+                if (key.startsWith('www.')) continue;
+                const { domain, port: sitePort } = this.parseDomainWithPort(key);
+                const port = this.assignPortToDomain(domain, sitePort);
+                site.localPorts[`${domain}:${sitePort}`] = port;
+                this.domainPorts[domain] = port;
+            }
+        }
+        await this._startIsolatedSites();
+
+        log.info(`(✔) Started ${Object.keys(this.domainPorts).length} sites in local mode`);
         return Promise.resolve();
     }
 
     start() {
         if (this._closing) return Promise.reject(new Error('Roster is closing or closed'));
         if (!this._startPromise) {
+            // Isolation requires Roster to own the listeners, so only start() initializes for it.
+            if (this.isolation && !this._initPromise) {
+                if (isBunRuntime) {
+                    log.warn('⚠️  Bun runtime detected: site isolation is not supported; all sites run in the main process');
+                } else {
+                    this._isolate = true;
+                }
+            }
             this._startPromise = this._start().catch(async error => {
                 if (!this._closing) {
                     try { await this.close(); } catch (cleanupError) {
@@ -1462,9 +1673,12 @@ class Roster {
 
             await this._listen(httpServer, 80, this.hostname);
             log.info('HTTP server listening on port 80');
+            await this._startIsolatedSites();
 
-            for (const [port, portData] of Object.entries(this._sitesByPort)) {
+            const ports = new Set([...Object.keys(this._sitesByPort), ...Object.keys(this._isolatedRoutes)]);
+            for (const port of ports) {
                 const portNum = parseInt(port);
+                const portData = this._sitesByPort[port] || { virtualServers: {}, appHandlers: {} };
                 const dispatcher = this._createDispatcher(portData);
                 const upgradeHandler = this._createUpgradeHandler(portData);
 
@@ -1577,10 +1791,9 @@ class Roster {
                         httpsServer = glx.httpsServer(tlsOpts, dispatcher);
                     }
 
-                    this.portServers[portNum] = httpsServer;
                     httpsServer.on('upgrade', upgradeHandler);
 
-                    await this._listen(httpsServer, portNum, this.hostname);
+                    await this._listenSite(httpsServer, portNum);
                     log.info(`HTTPS server listening on port ${portNum}`);
                 } else {
                     const httpsOptions = {
@@ -1600,9 +1813,7 @@ class Roster {
                         }
                     });
 
-                    this.portServers[portNum] = httpsServer;
-
-                    await this._listen(httpsServer, portNum, this.hostname);
+                    await this._listenSite(httpsServer, portNum);
                     log.info(`HTTPS server listening on port ${portNum}`);
                 }
             }
@@ -1654,6 +1865,7 @@ class Roster {
 
 module.exports = Roster;
 module.exports.isBunRuntime = isBunRuntime;
+module.exports.pluginSource = PLUGIN_SOURCE;
 module.exports.wildcardRoot = wildcardRoot;
 module.exports.hostMatchesWildcard = hostMatchesWildcard;
 module.exports.wildcardSubjectForHost = wildcardSubjectForHost;
