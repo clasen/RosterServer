@@ -985,7 +985,7 @@ class Roster {
             socket.setTimeout(0);
             const site = servername && this._isolatedSiteFor(routes, servername);
             if (site) {
-                site.handoff(port, head, socket);
+                site.handoff(port, head, socket, () => this._sockets.delete(socket));
                 return;
             }
             socket.unshift(head);
