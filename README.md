@@ -272,7 +272,7 @@ const dnsChallenge = {
 
 Pass this as the constructor's `dnsChallenge` option. To use another provider, install its Greenlock DNS plugin in the consuming application and supply its module name and provider options. Configure DNS timing on that object with `propagationDelay`, `dryRunDelay`, `dnsPollIntervalMs`, and `dnsPollTimeoutMs`; the wrapper's polling interval defaults to `15000` ms.
 
-`serverKeyType: 'EC-P256'` makes each full TLS handshake much cheaper for the server than the default RSA key. It applies to certificates issued after the change: renewal reuses a certificate's existing key. To move an existing name to the new key type, remove its directory under `greenlockStorePath/live/` and restart; Roster issues a new certificate on the first connection for that name.
+New certificates use an `EC-P256` key by default, which makes each full TLS handshake much cheaper for the server than an RSA key. Clients that cannot negotiate ECDSA, such as Windows XP or Android 2.x, need `serverKeyType: 'RSA-2048'`. The key type applies to certificates issued after it is set: renewal reuses a certificate's existing key, so certificates issued before 3.2.0 keep their RSA key. To move an existing name to the configured key type, remove its directory under `greenlockStorePath/live/` and restart; Roster issues a new certificate on the first connection for that name.
 
 Roster's file-based SNI resolvers cache TLS contexts and detect changed certificate files through metadata, including updates from another process. Concurrent requests for the same certificate name share loads and checks. Standalone startup reuses the initialized certificate runtime and Roster's cancellable renewal loop. Loading an existing certificate does not itself force renewal.
 
@@ -299,7 +299,7 @@ Pass operational settings through the constructor, using the consuming applicati
 | `isolation` | `true` (`false` with `cluster`) | One process per site directory under `start()`; `false` or `{ restartDelayMs, backlog, helloTimeoutMs }` (defaults `1000`, `511`, `10000`). See [site isolation](#site-isolation). |
 | `tlsMinVersion`, `tlsMaxVersion` | `TLSv1.2`, `TLSv1.3` | Protocol limits for created HTTPS servers. |
 | `keepAliveTimeoutMs` | Node.js default (`5000`) | Idle time before a site server closes a keep-alive connection, in isolated and main-process sites. Set it above the interval at which clients repeat requests so they reuse the connection instead of paying a new TLS handshake. |
-| `serverKeyType` | `RSA-2048` | Key for newly issued certificates: `RSA-2048`, `RSA-3072`, `RSA-4096`, `EC-P256`, or `EC-P384`. See [certificates](#certificates-and-dns). |
+| `serverKeyType` | `EC-P256` | Key for newly issued certificates: `EC-P256`, `EC-P384`, `RSA-2048`, `RSA-3072`, or `RSA-4096`. See [certificates](#certificates-and-dns). |
 | `skipLocalCheck` | `true` | Skips Greenlock dry-run/local challenge checks. |
 | `dnsChallenge` | CLI wrapper | DNS-01 options or `false`; see [certificates](#certificates-and-dns). |
 | `disableWildcard`, `combineWildcardCerts` | `false`, `false` | Wildcard registration and certificate behavior. |

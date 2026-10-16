@@ -360,7 +360,7 @@ class Roster {
         if (this.keepAliveTimeoutMs !== undefined && (!Number.isFinite(this.keepAliveTimeoutMs) || this.keepAliveTimeoutMs <= 0)) {
             throw new TypeError('keepAliveTimeoutMs must be a positive finite number');
         }
-        this.serverKeyType = options.serverKeyType ?? 'RSA-2048';
+        this.serverKeyType = options.serverKeyType ?? 'EC-P256';
         if (!SERVER_KEY_TYPES.includes(this.serverKeyType)) {
             throw new TypeError(`serverKeyType must be one of ${SERVER_KEY_TYPES.join(', ')}`);
         }

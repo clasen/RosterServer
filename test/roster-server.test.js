@@ -822,8 +822,8 @@ describe('Roster generateConfigJson', () => {
                 roster.generateConfigJson();
                 return JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8')).defaults.serverKeyType;
             };
-            assert.strictEqual(keyTypeFor({}), 'RSA-2048');
-            assert.strictEqual(keyTypeFor({ serverKeyType: 'EC-P256' }), 'EC-P256');
+            assert.strictEqual(keyTypeFor({}), 'EC-P256');
+            assert.strictEqual(keyTypeFor({ serverKeyType: 'RSA-2048' }), 'RSA-2048');
         } finally {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
