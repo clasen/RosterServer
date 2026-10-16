@@ -107,6 +107,7 @@ dist
 .DS_Store
 
 greenlock.d
+.greenlockrc
 CLAUDE.md
 /.agents
 skills-lock.json
