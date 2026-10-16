@@ -32,8 +32,9 @@ function certificate(roster, subject, serial) {
     const key = path.join(directory, 'privkey.pem');
     const cert = path.join(directory, 'cert.pem');
     const keyArgs = fs.existsSync(key) ? ['-key', key] : ['-newkey', 'rsa:2048', '-nodes', '-keyout', key];
-    execFileSync('openssl', ['req', '-x509', ...keyArgs, '-out', cert,
-        '-subj', '/CN=example.com', '-days', '1', '-set_serial', String(serial)], { stdio: 'ignore' });
+    const name = subject.replace(/^_wildcard_\./, '*.');
+    execFileSync('openssl', ['req', '-x509', ...keyArgs, '-out', cert, '-subj', '/CN=example.com',
+        '-addext', `subjectAltName=DNS:${name}`, '-days', '1', '-set_serial', String(serial)], { stdio: 'ignore' });
     fs.writeFileSync(path.join(directory, 'chain.pem'), '');
     return directory;
 }

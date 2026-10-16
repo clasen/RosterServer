@@ -218,6 +218,44 @@ it('reuses TLS contexts, coalesces concurrent loads, and reloads changed certifi
     assert.equal(roster._secureContexts.size, 0);
 });
 
+function installCertificate(root, directoryName, names) {
+    const directory = path.join(root, 'live', directoryName);
+    fs.mkdirSync(directory, { recursive: true });
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes',
+        '-keyout', path.join(directory, 'privkey.pem'), '-out', path.join(directory, 'cert.pem'),
+        '-subj', `/CN=${names[0]}`, '-addext', `subjectAltName=${names.map(name => `DNS:${name}`).join(',')}`,
+        '-days', '1'], { stdio: 'ignore' });
+    fs.writeFileSync(path.join(directory, 'chain.pem'), '');
+}
+
+it('falls back to zone and wildcard certificates only when they cover the host', async t => {
+    const root = temporaryDirectory(t);
+    installCertificate(root, 'example.com', ['example.com', 'www.example.com']);
+    installCertificate(root, '_wildcard_.wild.example.com', ['*.wild.example.com']);
+    const roster = new Roster({ local: true, wwwPath: root, greenlockStorePath: root });
+    t.after(() => roster.close());
+    const issued = [];
+    roster._greenlockRuntime = {
+        get: async ({ servername }) => {
+            issued.push(servername);
+            installCertificate(root, servername, [servername]);
+        }
+    };
+
+    const www = await roster._getSecureContext('www.example.com');
+    assert.equal(www, roster._secureContexts.get('example.com').context);
+    const wild = await roster._getSecureContext('shop.wild.example.com');
+    assert.equal(wild, roster._secureContexts.get('_wildcard_.wild.example.com').context);
+    assert.deepEqual(issued, []);
+
+    const uncovered = await roster._getSecureContext('api.example.com');
+    assert.deepEqual(issued, ['api.example.com']);
+    assert.equal(uncovered, roster._secureContexts.get('api.example.com').context);
+
+    assert.match(roster._resolvePemsForServername('www.example.com').cert, /BEGIN CERTIFICATE/);
+    assert.equal(roster._resolvePemsForServername('mail.example.com'), null);
+});
+
 it('coalesces certificate checks and prevents new issuance after close', async t => {
     const root = temporaryDirectory(t);
     const roster = new Roster({ local: true, wwwPath: root });

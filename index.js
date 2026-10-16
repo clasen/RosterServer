@@ -139,6 +139,12 @@ function buildCertLookupCandidates(servername) {
     return candidates;
 }
 
+// The certificate stored for a host's own subject serves it; a wildcard or zone
+// certificate found as a fallback serves only the names it covers.
+function certDirServesHost(certDir, host, certificate) {
+    return certDirCandidatesForSubject(host).includes(certDir) || certificate.checkHost(host) !== undefined;
+}
+
 function certCoversName(certPem, name) {
     try {
         const x509 = new crypto.X509Certificate(certPem);
@@ -887,7 +893,7 @@ class Roster {
         const candidates = buildCertLookupCandidates(host);
         for (const candidate of candidates) {
             const pems = this._loadCert(candidate);
-            if (pems) return pems;
+            if (pems && certDirServesHost(candidate, host, new crypto.X509Certificate(pems.cert))) return pems;
         }
         return null;
     }
@@ -1096,8 +1102,8 @@ class Roster {
                 pending = this._loadSecureContext(subject).finally(() => this._contextLoads.delete(subject));
                 this._contextLoads.set(subject, pending);
             }
-            const context = await pending;
-            if (context) return context;
+            const loaded = await pending;
+            if (loaded && certDirServesHost(subject, host, loaded.certificate)) return loaded.context;
         }
         return null;
     }
@@ -1116,12 +1122,16 @@ class Roster {
         this._assertOpen();
         const version = stats.map(stat => `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join('|');
         const cached = this._secureContexts.get(subject);
-        if (cached && cached.version === version) return cached.context;
+        if (cached && cached.version === version) return cached;
         const [key, cert, chain] = await Promise.all(files.map(file => fs.promises.readFile(file, 'utf8')));
         this._assertOpen();
-        const context = tls.createSecureContext({ key, cert: cert + chain });
-        this._secureContexts.set(subject, { version, context });
-        return context;
+        const loaded = {
+            version,
+            context: tls.createSecureContext({ key, cert: cert + chain }),
+            certificate: new crypto.X509Certificate(cert)
+        };
+        this._secureContexts.set(subject, loaded);
+        return loaded;
     }
 
     _checkCertificate(servername) {
