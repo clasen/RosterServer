@@ -13,6 +13,7 @@ const { IsolatedSite } = require('./lib/isolated-site.js');
 const { parseClientHello } = require('./lib/client-hello.js');
 const log = require('lemonlog')('roster');
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'];
+const SERVER_KEY_TYPES = ['RSA-2048', 'RSA-3072', 'RSA-4096', 'EC-P256', 'EC-P384'];
 // A request plugin carrying { module, export, options } under this key can be recreated in isolated site processes.
 const PLUGIN_SOURCE = Symbol.for('roster-server.plugin-source');
 
@@ -355,6 +356,14 @@ class Roster {
         this.maxLocalPort = options.maxLocalPort || 9999;
         this.tlsMinVersion = options.tlsMinVersion ?? 'TLSv1.2';
         this.tlsMaxVersion = options.tlsMaxVersion ?? 'TLSv1.3';
+        this.keepAliveTimeoutMs = options.keepAliveTimeoutMs;
+        if (this.keepAliveTimeoutMs !== undefined && (!Number.isFinite(this.keepAliveTimeoutMs) || this.keepAliveTimeoutMs <= 0)) {
+            throw new TypeError('keepAliveTimeoutMs must be a positive finite number');
+        }
+        this.serverKeyType = options.serverKeyType ?? 'RSA-2048';
+        if (!SERVER_KEY_TYPES.includes(this.serverKeyType)) {
+            throw new TypeError(`serverKeyType must be one of ${SERVER_KEY_TYPES.join(', ')}`);
+        }
         this.disableWildcard = parseBooleanFlag(options.disableWildcard, false);
         this.combineWildcardCerts = parseBooleanFlag(options.combineWildcardCerts, false);
         if (isBunRuntime && this.combineWildcardCerts) {
@@ -607,7 +616,7 @@ class Roster {
                 renewOffset: "-45d",
                 renewStagger: "3d",
                 accountKeyType: "EC-P256",
-                serverKeyType: "RSA-2048",
+                serverKeyType: this.serverKeyType,
                 subscriberEmail: this.email
             },
             sites: sitesConfig
@@ -937,6 +946,7 @@ class Roster {
             greenlockStorePath: this.greenlockStorePath,
             tlsMinVersion: this.tlsMinVersion,
             tlsMaxVersion: this.tlsMaxVersion,
+            keepAliveTimeoutMs: this.keepAliveTimeoutMs,
             closeTimeoutMs: this.closeTimeoutMs
         };
         const sitesByPath = new Map();
@@ -994,7 +1004,14 @@ class Roster {
         socket.on('data', read);
     }
 
+    // Applies the options shared by every server that serves sites.
+    _configureSiteServer(server) {
+        if (this.keepAliveTimeoutMs !== undefined) server.keepAliveTimeout = this.keepAliveTimeoutMs;
+        return server;
+    }
+
     _listenSite(server, port) {
+        this._configureSiteServer(server);
         const routes = this._isolatedRoutes[port];
         if (!routes) {
             this.portServers[port] = server;
@@ -1545,14 +1562,14 @@ class Roster {
             ? await this.ensureCertificate(normalizedServername)
             : this.loadCertificate(normalizedServername);
 
-        const server = https.createServer({
+        const server = this._configureSiteServer(https.createServer({
             minVersion: this.tlsMinVersion,
             maxVersion: this.tlsMaxVersion,
             ...tlsOptions,
             key: pems.key,
             cert: pems.cert,
             SNICallback: this.sniCallback()
-        });
+        }));
 
         this.attach(server, { port });
         return server;
@@ -1591,7 +1608,7 @@ class Roster {
                     }
                 };
 
-                const httpServer = http.createServer(dispatcher);
+                const httpServer = this._configureSiteServer(http.createServer(dispatcher));
                 this.portServers[port] = httpServer;
 
                 httpServer.on('upgrade', (req, socket, head) => {

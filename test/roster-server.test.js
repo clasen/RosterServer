@@ -813,6 +813,34 @@ describe('Roster generateConfigJson', () => {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         }
     });
+    it('issues certificates with the configured server key type', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-config-'));
+        try {
+            const keyTypeFor = (options) => {
+                const roster = new Roster({ local: false, greenlockStorePath: tmpDir, ...options });
+                roster.domains = ['example.com', 'www.example.com'];
+                roster.generateConfigJson();
+                return JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8')).defaults.serverKeyType;
+            };
+            assert.strictEqual(keyTypeFor({}), 'RSA-2048');
+            assert.strictEqual(keyTypeFor({ serverKeyType: 'EC-P256' }), 'EC-P256');
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('Roster TLS and keep-alive options', () => {
+    it('rejects unsupported server key types', () => {
+        for (const serverKeyType of ['EC-P521', 'DSA-1024', 'ec-p256', '']) {
+            assert.throws(() => new Roster({ serverKeyType }), TypeError);
+        }
+    });
+    it('rejects keep-alive timeouts that are not positive finite numbers', () => {
+        for (const keepAliveTimeoutMs of [0, -1, Infinity, '30000']) {
+            assert.throws(() => new Roster({ keepAliveTimeoutMs }), TypeError);
+        }
+    });
 });
 
 describe('Roster init() (cluster-friendly API)', () => {

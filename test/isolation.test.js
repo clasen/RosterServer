@@ -52,11 +52,13 @@ function createWww(t, sites) {
     return { root, wwwPath };
 }
 
-async function startProduction(t, sites, { certificates = [], issue = async () => {}, configure = () => {} } = {}) {
+async function startProduction(t, sites, { certificates = [], issue = async () => {}, configure = () => {}, options = {} } = {}) {
     const { root, wwwPath } = createWww(t, sites);
     const store = path.join(root, 'greenlock.d');
     for (const subject of certificates) installCertificate(store, subject);
-    const roster = new Roster({ wwwPath, greenlockStorePath: store, isolation: { restartDelayMs: 50 }, closeTimeoutMs: 5000 });
+    const roster = new Roster({
+        wwwPath, greenlockStorePath: store, isolation: { restartDelayMs: 50 }, closeTimeoutMs: 5000, ...options
+    });
     t.mock.method(shim, 'create', () => ({ get: issue }));
     t.mock.method(greenlock, 'init', () => ({
         ready(callback) {
@@ -166,6 +168,30 @@ it('stops tracking connections in the main process once they are handed to a sit
     }
     assert.equal(roster._sockets.size, 0, 'handed-off sockets are still tracked by the main process');
 });
+
+// Resolves with how long the server kept the connection open after answering one request.
+function idleKeepAliveMs(port, servername) {
+    return new Promise((resolve, reject) => {
+        const socket = tls.connect({ host: '127.0.0.1', port, servername, rejectUnauthorized: false }, () => {
+            socket.write(`GET / HTTP/1.1\r\nHost: ${servername}\r\nConnection: keep-alive\r\n\r\n`);
+        });
+        let answeredAt = null;
+        socket.on('data', () => { answeredAt ??= Date.now(); });
+        socket.on('close', () => answeredAt ? resolve(Date.now() - answeredAt) : reject(new Error('closed before answering')));
+        socket.on('error', reject);
+    });
+}
+
+for (const isolation of [true, false]) {
+    it(`closes idle keep-alive connections after keepAliveTimeoutMs (isolation ${isolation})`, { timeout: 20000 }, async t => {
+        const { port } = await startProduction(t, { 'idle.example.com': REPORT_SITE }, {
+            certificates: ['idle.example.com'],
+            options: { keepAliveTimeoutMs: 300, ...(isolation ? {} : { isolation: false }) }
+        });
+        const idleMs = await idleKeepAliveMs(port, 'idle.example.com');
+        assert.ok(idleMs >= 250 && idleMs < 2500, `connection stayed open ${idleMs} ms`);
+    });
+}
 
 it('keeps serving other sites while one blocks its event loop', { timeout: 20000 }, async t => {
     const { port } = await startProduction(t, {
