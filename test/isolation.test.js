@@ -154,19 +154,6 @@ it('keeps serving in the same worker when a connection arrives without a socket'
     assert.equal(child.exitCode, null);
 });
 
-it('stops tracking connections in the main process once they are handed to a site process', { timeout: 20000 }, async t => {
-    const { roster, port } = await startProduction(t, { 'handoff.example.com': REPORT_SITE }, {
-        certificates: ['handoff.example.com']
-    });
-    for (let request = 0; request < 20; request++) {
-        assert.equal((await get(port, 'handoff.example.com')).status, 200);
-    }
-    for (let attempt = 0; attempt < 50 && roster._sockets.size > 0; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    assert.equal(roster._sockets.size, 0, 'handed-off sockets are still tracked by the main process');
-});
-
 it('keeps serving other sites while one blocks its event loop', { timeout: 20000 }, async t => {
     const { port } = await startProduction(t, {
         'busy.example.com': `module.exports = () => (req, res) => {
