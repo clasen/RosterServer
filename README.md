@@ -191,6 +191,10 @@ A site directory whose entry exports an object with a `connection(socket, head)`
 ```javascript
 // www/game.example.com/index.js
 export default {
+    async start({ certificate }) {
+        // Runs once before the first connection, e.g. to fork workers.
+        // certificate(servername) resolves { key, cert } PEM strings; cert includes the chain.
+    },
     connection(socket, head) {
         // Terminate TLS here, or pass socket and head to another process.
     },
@@ -202,7 +206,7 @@ export default {
 
 In production, `socket` is the client's TCP connection and `head` holds the TLS ClientHello that Roster already read; put it back with `socket.unshift(head)` before terminating TLS, and do not `resume()` the socket after wrapping it. In local mode, the site's assigned port accepts plain TCP connections, `socket` arrives paused, and `head` is empty. `connection()` runs synchronously; if it throws, Roster destroys the socket.
 
-Roster keeps issuing and renewing the site's certificates under `greenlockStorePath/live/<domain>`, but the site loads them and must pick up renewed files itself. Request plugins, `www.` redirects, and `onClose` hooks do not apply: the site owns every connection it receives. A socket site must run isolated; Roster rejects it when it would be served by the main process.
+`certificate(servername)` returns the certificate Roster would serve for that host, with the same wildcard and zone matching. A missing certificate is issued by the main process first, as for any isolated site. Roster also renews it; call `certificate()` again to pick up a renewal, for example on an interval or when a cached copy gets old. It is not available in local mode. Request plugins, `www.` redirects, and `onClose` hooks do not apply: the site owns every connection it receives. A socket site must run isolated; Roster rejects it when it would be served by the main process.
 
 ## Startup and shutdown
 

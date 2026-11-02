@@ -405,17 +405,20 @@ it('closes isolated sites when the main process dies without closing', { timeout
     assert.equal(fs.readFileSync(marker, 'utf8'), 'closed');
 });
 
-function socketSite(server, marker) {
+function socketSite(server, marker, start = 'async start() {}') {
     return `const fs = require('fs');
-const server = ${server};
-server.on('request', (req, res) => res.end(JSON.stringify({ pid: process.pid, address: req.socket.remoteAddress })));
+let server = ${server};
 module.exports = {
+    ${start},
     connection(socket, head) {
         fs.writeFileSync(${JSON.stringify(marker)} + '.head', String(head.length));
         // A ClientHello read by Roster goes back on the stream; a local connection arrives paused.
         if (head.length > 0) socket.unshift(head);
         server.emit('connection', socket);
         if (head.length === 0) socket.resume();
+    },
+    reply(req, res) {
+        res.end(JSON.stringify({ pid: process.pid, address: req.socket.remoteAddress }));
     },
     close() {
         fs.writeFileSync(${JSON.stringify(marker)}, 'closed');
@@ -426,14 +429,15 @@ module.exports = {
 it('hands raw client sockets with their ClientHello to a socket site that terminates TLS', { timeout: 20000 }, async t => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
     t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
-    const tlsServer = `require('https').createServer({
-        key: fs.readFileSync(${JSON.stringify(path.join(pki, 'key.pem'))}),
-        cert: fs.readFileSync(${JSON.stringify(path.join(pki, 'cert.pem'))})
-    })`;
+    // The site gets its certificate from Roster's store through start(), not from files it reads.
+    const start = `async start({ certificate }) {
+        const pems = await certificate('raw.example.com');
+        server = require('https').createServer(pems, (req, res) => module.exports.reply(req, res));
+    }`;
     const { roster, port } = await startProduction(t, {
-        'raw.example.com': socketSite(tlsServer, marker),
+        'raw.example.com': socketSite('null', marker, start),
         'plain.example.com': REPORT_SITE
-    }, { certificates: ['plain.example.com'] });
+    }, { certificates: ['plain.example.com', 'raw.example.com'] });
     const raw = JSON.parse((await get(port, 'raw.example.com')).body);
     const plain = JSON.parse((await get(port, 'plain.example.com')).body);
     assert.notEqual(raw.pid, process.pid);
@@ -445,10 +449,31 @@ it('hands raw client sockets with their ClientHello to a socket site that termin
     assert.equal(isRunning(raw.pid), false);
 });
 
+it('issues a missing certificate through the main process when a socket site asks for it', { timeout: 20000 }, async t => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
+    t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
+    const store = path.join(path.dirname(marker), 'greenlock.d');
+    const issued = [];
+    const start = `async start({ certificate }) {
+        server = require('https').createServer(await certificate('fresh.example.com'), (req, res) => module.exports.reply(req, res));
+    }`;
+    const { port } = await startProduction(t, { 'fresh.example.com': socketSite('null', marker, start) }, {
+        options: { greenlockStorePath: store },
+        issue: async ({ servername }) => {
+            issued.push(servername);
+            installCertificate(store, servername);
+        }
+    });
+    assert.deepEqual(issued, ['fresh.example.com']);
+    assert.notEqual(JSON.parse((await get(port, 'fresh.example.com')).body).pid, process.pid);
+});
+
 it('gives a socket site plain connections on its local port', { timeout: 20000 }, async t => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
     t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
-    const { wwwPath } = createWww(t, { 'raw.example': socketSite(`require('http').createServer()`, marker) });
+    const { wwwPath } = createWww(t, {
+        'raw.example': socketSite(`require('http').createServer((req, res) => module.exports.reply(req, res))`, marker)
+    });
     const roster = new Roster({ local: true, wwwPath, minLocalPort: 19370, maxLocalPort: 19379 });
     t.after(() => roster.close().catch(() => {}));
     await roster.start();
