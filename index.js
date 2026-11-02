@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
-const { locateSiteEntry, resolveSiteApp } = require('./lib/resolve-site-app.js');
+const { locateSiteEntry, resolveSiteApp, isSocketSite } = require('./lib/resolve-site-app.js');
 const { IsolatedSite } = require('./lib/isolated-site.js');
 const { parseClientHello } = require('./lib/client-hello.js');
 const log = require('lemonlog')('roster');
@@ -902,6 +902,9 @@ class Roster {
         this._sitesByPort = {};
         for (const [hostKey, siteApp] of Object.entries(this.sites)) {
             this._assertOpen();
+            if (isSocketSite(siteApp)) {
+                throw new Error(`${hostKey} serves raw connections and must run as an isolated site directory`);
+            }
             if (hostKey.startsWith('www.') || typeof siteApp !== 'function') continue;
             const { domain, port } = this.parseDomainWithPort(hostKey);
             if (!this._sitesByPort[port]) {

@@ -405,6 +405,66 @@ it('closes isolated sites when the main process dies without closing', { timeout
     assert.equal(fs.readFileSync(marker, 'utf8'), 'closed');
 });
 
+function socketSite(server, marker) {
+    return `const fs = require('fs');
+const server = ${server};
+server.on('request', (req, res) => res.end(JSON.stringify({ pid: process.pid, address: req.socket.remoteAddress })));
+module.exports = {
+    connection(socket, head) {
+        fs.writeFileSync(${JSON.stringify(marker)} + '.head', String(head.length));
+        // A ClientHello read by Roster goes back on the stream; a local connection arrives paused.
+        if (head.length > 0) socket.unshift(head);
+        server.emit('connection', socket);
+        if (head.length === 0) socket.resume();
+    },
+    close() {
+        fs.writeFileSync(${JSON.stringify(marker)}, 'closed');
+    }
+};`;
+}
+
+it('hands raw client sockets with their ClientHello to a socket site that terminates TLS', { timeout: 20000 }, async t => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
+    t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
+    const tlsServer = `require('https').createServer({
+        key: fs.readFileSync(${JSON.stringify(path.join(pki, 'key.pem'))}),
+        cert: fs.readFileSync(${JSON.stringify(path.join(pki, 'cert.pem'))})
+    })`;
+    const { roster, port } = await startProduction(t, {
+        'raw.example.com': socketSite(tlsServer, marker),
+        'plain.example.com': REPORT_SITE
+    }, { certificates: ['plain.example.com'] });
+    const raw = JSON.parse((await get(port, 'raw.example.com')).body);
+    const plain = JSON.parse((await get(port, 'plain.example.com')).body);
+    assert.notEqual(raw.pid, process.pid);
+    assert.notEqual(raw.pid, plain.pid);
+    assert.match(raw.address, /127\.0\.0\.1$/);
+    assert.ok(Number(fs.readFileSync(`${marker}.head`, 'utf8')) > 0);
+    await roster.close();
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'closed');
+    assert.equal(isRunning(raw.pid), false);
+});
+
+it('gives a socket site plain connections on its local port', { timeout: 20000 }, async t => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
+    t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
+    const { wwwPath } = createWww(t, { 'raw.example': socketSite(`require('http').createServer()`, marker) });
+    const roster = new Roster({ local: true, wwwPath, minLocalPort: 19370, maxLocalPort: 19379 });
+    t.after(() => roster.close().catch(() => {}));
+    await roster.start();
+    const { port } = new URL(roster.getUrl('raw.example'));
+    assert.notEqual(JSON.parse((await localGet(port)).body).pid, process.pid);
+    assert.equal(fs.readFileSync(`${marker}.head`, 'utf8'), '0');
+    await roster.close();
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'closed');
+});
+
+it('refuses a socket site served by the main process', { timeout: 20000 }, async t => {
+    const { wwwPath } = createWww(t, { 'raw.example': `module.exports = { connection() {} };` });
+    const roster = new Roster({ local: true, wwwPath, isolation: false, minLocalPort: 19380, maxLocalPort: 19389 });
+    await assert.rejects(roster.start(), /must run as an isolated site directory/);
+});
+
 it('rejects combining isolation with the legacy cluster launcher', () => {
     assert.throws(() => new Roster({ cluster: true, isolation: true }), /cannot be combined/);
     assert.equal(new Roster({ cluster: true }).isolation, null);
