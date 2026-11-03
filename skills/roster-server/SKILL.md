@@ -9,7 +9,7 @@ Use this skill to configure a consuming application. Keep its existing configura
 
 ## Choose the lifecycle owner
 
-- **Local development:** `new Roster({ local: true, wwwPath: absolutePath })`, register sites, then `await roster.start()`. Local mode binds to `localhost` and assigns ports; read URLs with `roster.getUrl(domain)` after startup.
+- **Local development:** `new Roster({ local: true, wwwPath: absolutePath })`, register sites, then `await roster.start()`. Local mode binds to `hostname` (default `::`, IPv4 and IPv6) and assigns ports; read URLs with `roster.getUrl(domain)` after startup.
 - **Standalone HTTPS:** set the real `email`, absolute `wwwPath` and `greenlockStorePath`; leave `local` false. `await roster.start()` owns ACME HTTP on port 80 and the configured HTTPS listeners. A different HTTPS port does not eliminate the need for port 80.
 - **External server/worker:** `await roster.init()`, then `roster.attach(server, { port })` or an HTTPS helper. The caller owns listening and closing that server. `port` on `attach()` selects the routing table, not the TCP port.
 - **Serving-only worker:** use `autoCertificates: false` with `init()` and `createServingHttpsServer({ servername })`. A separate manager must provide certificates first. Calling `start()` still enables the standalone ACME lifecycle.

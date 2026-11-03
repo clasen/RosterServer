@@ -950,6 +950,7 @@ class Roster {
         const plugins = this.plugins.map(isolatedPluginSource);
         const options = {
             local: this.local,
+            hostname: this.hostname,
             port: this.defaultPort,
             filename: this.filename,
             greenlockStorePath: this.greenlockStorePath,
@@ -1630,7 +1631,7 @@ class Roster {
                     virtualServer.processUpgrade(req, socket, head);
                 });
 
-                await this._listen(httpServer, port, 'localhost');
+                await this._listen(httpServer, port, this.hostname);
                 const cleanDomain = normalizeDomainForLocalHost(domain);
                 log.info(`🌐 ${domain} → http://${localHostForDomain(cleanDomain)}:${port}`);
             }

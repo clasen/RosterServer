@@ -91,9 +91,9 @@ function get(port, servername, { pathname = '/', headers = {} } = {}) {
     });
 }
 
-function localGet(port, pathname = '/') {
+function localGet(port, pathname = '/', hostname = 'localhost') {
     return new Promise((resolve, reject) => {
-        http.get({ hostname: 'localhost', port, path: pathname, agent: false }, res => {
+        http.get({ hostname, port, path: pathname, agent: false }, res => {
             let body = '';
             res.on('data', chunk => { body += chunk; });
             res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -315,6 +315,9 @@ it('isolates directory sites in local mode, including aliases and request plugin
     assert.equal(alias.pid, site.pid);
     assert.notEqual(other.pid, site.pid);
     assert.deepEqual(await localGet(port('other.example'), '/wp-login.php'), { status: 404, body: 'Not Found' });
+    for (const address of ['127.0.0.1', '::1']) {
+        assert.equal(JSON.parse((await localGet(port('site.example'), '/', address)).body).pid, site.pid);
+    }
 });
 
 it('serves a site module already loaded by the main process from that process', { timeout: 20000 }, async t => {
@@ -479,6 +482,7 @@ it('gives a socket site plain connections on its local port', { timeout: 20000 }
     await roster.start();
     const { port } = new URL(roster.getUrl('raw.example'));
     assert.notEqual(JSON.parse((await localGet(port)).body).pid, process.pid);
+    for (const address of ['127.0.0.1', '::1']) assert.equal((await localGet(port, '/', address)).status, 200);
     assert.equal(fs.readFileSync(`${marker}.head`, 'utf8'), '0');
     await roster.close();
     assert.equal(fs.readFileSync(marker, 'utf8'), 'closed');

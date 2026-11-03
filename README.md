@@ -28,7 +28,7 @@ await roster.start();
 console.log(roster.getUrl('example.com'));
 ```
 
-Local mode binds to `localhost`, skips certificates, and assigns domain ports within `minLocalPort`–`maxLocalPort` (default `4000`–`9999`). Assignments use a domain hash and resolve collisions within the instance; they do not probe for available OS ports. A bind failure rejects startup. Read the assigned URL with `getUrl()` instead of hardcoding a sample port.
+Local mode binds to `hostname` (default `::`, IPv4 and IPv6 on all interfaces), skips certificates, and assigns domain ports within `minLocalPort`–`maxLocalPort` (default `4000`–`9999`). Assignments use a domain hash and resolve collisions within the instance; they do not probe for available OS ports. A bind failure rejects startup. Read the assigned URL with `getUrl()` instead of hardcoding a sample port.
 
 For production HTTPS, use a real contact email, public DNS pointing to the host, and explicit storage paths:
 
@@ -313,7 +313,7 @@ Pass operational settings through the constructor, using the consuming applicati
 | `filename` | `index` | Script entry basename, without extension. |
 | `local` | `false` | Local HTTP mode with assigned ports and no certificates. |
 | `port` | `443` | Default port for manual registrations and routing helpers. |
-| `hostname` | `::` | Production bind address; local mode uses `localhost`. |
+| `hostname` | `::` | Bind address in production and local mode. |
 | `minLocalPort`, `maxLocalPort` | `4000`, `9999` | Inclusive local assignment range. |
 | `staging` | `false` | ACME staging environment. |
 | `autoCertificates` | `true` | Certificate runtime during `init()`; disable for serving-only workers. |

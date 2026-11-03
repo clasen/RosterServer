@@ -94,7 +94,7 @@ it('waits for listening, shares start, and closes owned servers once', async t =
 
 it('rejects bind failures and rolls back already opened ports', async t => {
     const blocker = http.createServer();
-    await new Promise(resolve => blocker.listen(0, 'localhost', resolve));
+    await new Promise(resolve => blocker.listen(0, '::', resolve));
     t.after(() => new Promise(resolve => blocker.close(resolve)));
     const roster = createRoster(t);
     const ports = [0, blocker.address().port];
