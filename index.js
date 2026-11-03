@@ -785,6 +785,12 @@ class Roster {
         }
     }
 
+    // Names the production site and the local URL that serves it, e.g. `example.com:3334 → tcp://localhost:6702`.
+    _describeLocalSite(domain, sitePort, localPort, scheme) {
+        const site = `${domain}${sitePort !== this.defaultPort ? ':' + sitePort : ''}`;
+        return `${site} → ${scheme}://${localHostForDomain(normalizeDomainForLocalHost(domain))}:${localPort}`;
+    }
+
     parseDomainWithPort(domainString) {
         const parts = domainString.split(':');
         if (parts.length === 2) {
@@ -1632,8 +1638,7 @@ class Roster {
                 });
 
                 await this._listen(httpServer, port, this.hostname);
-                const cleanDomain = normalizeDomainForLocalHost(domain);
-                log.info(`🌐 ${domain} → http://${localHostForDomain(cleanDomain)}:${port}`);
+                log.info(`🌐 ${this._describeLocalSite(domain, Number(sitePort), port, 'http')}`);
             }
         }
 

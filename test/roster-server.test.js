@@ -372,6 +372,14 @@ describe('Roster', () => {
         });
     });
 
+    describe('local site description', () => {
+        it('names the production port only when it differs from the default', () => {
+            const roster = new Roster({ local: true });
+            assert.strictEqual(roster._describeLocalSite('truco.example.com', 443, 6701, 'http'), 'truco.example.com → http://truco.localhost:6701');
+            assert.strictEqual(roster._describeLocalSite('truco.example.com', 3334, 6702, 'tcp'), 'truco.example.com:3334 → tcp://truco.localhost:6702');
+        });
+    });
+
     describe('getUrl (exact domain)', () => {
         it('returns http://localhost:PORT in local mode for registered domain', () => {
             const roster = new Roster({ local: true });
