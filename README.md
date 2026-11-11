@@ -378,7 +378,7 @@ Enable `trustProxy` only behind a trusted proxy that overwrites `X-Forwarded-For
 | Certificates are missing in a worker | Ensure the manager has issued them into the same store before worker startup. `init()` alone does not bind ACME HTTP. |
 | Shutdown times out | Inspect the aggregated errors and site hooks, active requests, and pending certificate operations. |
 
-Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun. In **Bun 1.3.4**, the tested `node:https` serving helper did not invoke `SNICallback`, and changing certificate files did not replace the served default certificate. This also occurred with the previous synchronous resolver; do not assume Node's SNI reload behavior on that runtime.
+Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun. In **Bun 1.3.4 and 1.4.4**, `node:https` servers never invoke `SNICallback` and do not implement `addContext()` or `setSecureContext()`. On Bun, Roster therefore serves each HTTPS port with the certificate of the first site registered on that port, loaded from the store (issued through Greenlock first when missing): other hosts on that port are routed normally but receive that certificate, so give them a certificate that covers them (for example a combined wildcard). Renewed certificate files take effect after a restart. The serving helpers (`createManagedHttpsServer()`, `createServingHttpsServer()`, `sniCallback()`) depend on `SNICallback` and do not select certificates per host on Bun.
 
 ## Agent skill and development
 
@@ -388,7 +388,7 @@ The [RosterServer skill](skills/roster-server/SKILL.md) guides application integ
 npx skills add https://github.com/clasen/RosterServer --skill roster-server
 ```
 
-Contributors can run `pnpm test` for the Node test suite. Examples live in [demo](demo); they are separate from the published API reference above.
+Contributors can run `pnpm test` for the Node test suite and `pnpm test:bun` to run the same suite under Bun; tests for Node-only behavior are skipped there and `test/bun-runtime.test.js` covers the Bun-only paths. Examples live in [demo](demo); they are separate from the published API reference above.
 
 ## License
 

@@ -1782,7 +1782,9 @@ class Roster {
                     );
                 };
 
-                if (portNum === this.defaultPort) {
+                // Bun never calls SNICallback, so a server built only on it fails every handshake;
+                // every Bun port needs a default certificate loaded from files.
+                if (portNum === this.defaultPort || isBunRuntime) {
                     const tlsOpts = { minVersion: this.tlsMinVersion, maxVersion: this.tlsMaxVersion };
                     let httpsServer;
 

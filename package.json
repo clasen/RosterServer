@@ -4,7 +4,8 @@
     "description": "👾 RosterServer - A domain host router to host multiple HTTPS.",
     "main": "index.js",
     "scripts": {
-        "test": "node --test 'test/**/*.test.js'"
+        "test": "node --test 'test/**/*.test.js'",
+        "test:bun": "bun test ./test"
     },
     "repository": {
         "type": "git",

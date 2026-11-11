@@ -337,7 +337,11 @@ it('preserves initialization and cleanup errors when both fail', async t => {
     });
 });
 
-it('cancels a pending listen without opening a port when DNS resolves after shutdown', { timeout: 5000 }, async t => {
+it('cancels a pending listen without opening a port when DNS resolves after shutdown', {
+    timeout: 5000,
+    // Bun resolves listen() hostnames natively, so mocking node:dns cannot hold the lookup open.
+    skip: Roster.isBunRuntime && 'Bun listen() does not use node:dns.lookup'
+}, async t => {
     const dns = require('node:dns');
     let resolveLookup;
     t.mock.method(dns, 'lookup', (hostname, options, callback) => { resolveLookup = callback; });
@@ -413,7 +417,10 @@ it('handles errors from virtual listeners and invalid async plugins', async t =>
     assert.equal((await request(server)).status, 500);
 });
 
-it('uses one certificate runtime and waits for production listeners', async t => {
+// Bun takes the file-based TLS branch instead; test/bun-runtime.test.js covers it.
+it('uses one certificate runtime and waits for production listeners', {
+    skip: Roster.isBunRuntime && 'Bun serves HTTPS from certificate files instead of Greenlock'
+}, async t => {
     const shim = require('../vendor/greenlock-express/greenlock-shim.js');
     const greenlock = require('../vendor/greenlock-express/greenlock-express.js');
     const roster = createRoster(t, { local: false });
