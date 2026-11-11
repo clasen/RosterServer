@@ -180,7 +180,7 @@ module.exports = { createMyPlugin };
 
 On `close()`, or a handled signal, each isolated process drains its requests, runs its `onClose` hooks, and exits. Hook errors from those processes appear in the same `AggregateError`. When `closeTimeoutMs` expires, Roster kills the remaining isolated processes. Isolated processes ignore `SIGINT` and `SIGTERM` and wait for the main process, so a signal sent to the whole process group by a terminal or process manager does not cut their drain short. If the main process exits without closing, each isolated process closes itself.
 
-Isolation needs a Roster-owned listener, so it applies only when `start()` initializes the instance. Calling `init()` yourself keeps every site in the current process for `attach()` and the other external-server helpers. Isolation is not available on Bun, whose HTTPS server cannot adopt a passed socket; there, Roster logs a warning and serves every site in the main process. Isolation cannot be combined with the legacy `cluster: true` launcher, which disables it by default.
+Isolation needs a Roster-owned listener, so it applies only when `start()` initializes the instance. Calling `init()` yourself keeps every site in the current process for `attach()` and the other external-server helpers. Isolation cannot be combined with the legacy `cluster: true` launcher, which disables it by default.
 
 Each isolated process loads Node.js and its site, so memory use grows with the number of site directories. Code that runs when a site's module loads runs in that site's process, not in the main process.
 
@@ -204,7 +204,7 @@ export default {
 };
 ```
 
-In production, `socket` is the client's TCP connection and `head` holds the TLS ClientHello that Roster already read; put it back with `socket.unshift(head)` before terminating TLS, and do not `resume()` the socket after wrapping it. In local mode, the site's assigned port accepts plain TCP connections, `socket` arrives paused, and `head` is empty. `connection()` runs synchronously; if it throws, Roster destroys the socket.
+In production, `socket` is the client's TCP connection and `head` holds the TLS ClientHello that Roster already read; put it back with `socket.unshift(head)` before terminating TLS, and do not `resume()` the socket after wrapping it. To terminate TLS with an HTTPS server, create it with `Roster.createHttpsServer()` and hand it the socket with `Roster.acceptTlsConnection(server, socket)`: on Node these are `https.createServer()` and `server.emit('connection', socket)`, and on Bun they also select certificates per host and adopt the socket, which Bun's own `https.Server` does not. In local mode, the site's assigned port accepts plain TCP connections, `socket` arrives paused, and `head` is empty. `connection()` runs synchronously; if it throws, Roster destroys the socket.
 
 `certificate(servername)` returns the certificate Roster would serve for that host, with the same wildcard and zone matching. A missing certificate is issued by the main process first, as for any isolated site. Roster also renews it; call `certificate()` again to pick up a renewal, for example on an interval or when a cached copy gets old. It is not available in local mode. Request plugins, `www.` redirects, and `onClose` hooks do not apply: the site owns every connection it receives. A socket site must run isolated; Roster rejects it when it would be served by the main process.
 
@@ -348,6 +348,8 @@ Pass operational settings through the constructor, using the consuming applicati
 | `createManagedHttpsServer({ servername, port?, ensureCertificate?, tlsOptions? })` | `Promise<https.Server>` with certificates and dispatchers; does not listen. Certificate assurance defaults to `true`. Requires production-mode `init()`. |
 | `createServingHttpsServer({ servername, port?, tlsOptions? })` | Same helper with `ensureCertificate: false`; set `autoCertificates: false` for a serving-only instance. |
 | `virtualServer.onClose(fn)` | Register a cleanup hook; returns the virtual server. See [shutdown](#startup-and-shutdown). |
+| `Roster.createHttpsServer(options, handler?)` | `https.createServer()` with per-host `SNICallback`, `setSecureContext()`, and adopted sockets on both Node and Bun. Roster creates its HTTPS servers with it. |
+| `Roster.acceptTlsConnection(server, socket)` | Hand a raw client socket, with any bytes already read put back, to a server from `createHttpsServer()` to terminate TLS. |
 | `Roster.pluginSource` | Symbol for a request plugin's `{ module, export, options }` descriptor. See [site isolation](#site-isolation). |
 
 ## Request plugins
@@ -378,7 +380,7 @@ Enable `trustProxy` only behind a trusted proxy that overwrites `X-Forwarded-For
 | Certificates are missing in a worker | Ensure the manager has issued them into the same store before worker startup. `init()` alone does not bind ACME HTTP. |
 | Shutdown times out | Inspect the aggregated errors and site hooks, active requests, and pending certificate operations. |
 
-Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun. In **Bun 1.3.4 and 1.4.4**, `node:https` servers never invoke `SNICallback` and do not implement `addContext()` or `setSecureContext()`. On Bun, Roster therefore serves each HTTPS port with the certificate of the first site registered on that port, loaded from the store (issued through Greenlock first when missing): other hosts on that port are routed normally but receive that certificate, so give them a certificate that covers them (for example a combined wildcard). Renewed certificate files take effect after a restart. The serving helpers (`createManagedHttpsServer()`, `createServingHttpsServer()`, `sniCallback()`) depend on `SNICallback` and do not select certificates per host on Bun.
+Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun, and the test suite runs on both. Bun's `node:https` server never invokes `SNICallback`, lacks `addContext()` and `setSecureContext()`, and cannot adopt a socket passed to `emit('connection')` (checked on Bun 1.3.4 and 1.4.4). On Bun, Roster therefore terminates TLS with a `tls.Server` in front of an `http.Server`, so per-host certificates, certificate reload, custom HTTPS ports and site isolation behave as on Node. The visible difference is the server's class: on Bun, `Roster.createHttpsServer()`, `createManagedHttpsServer()` and `createServingHttpsServer()` return an `http.Server` whose `listen()`, `close()`, `address()` and certificate methods act on the inner `tls.Server`, so `instanceof https.Server` is `false` there.
 
 ## Agent skill and development
 
@@ -388,7 +390,7 @@ The [RosterServer skill](skills/roster-server/SKILL.md) guides application integ
 npx skills add https://github.com/clasen/RosterServer --skill roster-server
 ```
 
-Contributors can run `pnpm test` for the Node test suite and `pnpm test:bun` to run the same suite under Bun; tests for Node-only behavior are skipped there and `test/bun-runtime.test.js` covers the Bun-only paths. Examples live in [demo](demo); they are separate from the published API reference above.
+Contributors can run `pnpm test` for the Node test suite and `pnpm test:bun` to run the same suite under Bun. Examples live in [demo](demo); they are separate from the published API reference above.
 
 ## License
 

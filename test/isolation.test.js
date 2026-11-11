@@ -13,12 +13,10 @@ const { once } = require('node:events');
 const { execFileSync, spawn } = require('node:child_process');
 const Roster = require('../index.js');
 const { parseClientHello } = require('../lib/client-hello.js');
+const { createHttpsServer } = require('../lib/https-server.js');
 const { createScannerBlocker } = require('../plugins/scanner-blocker.js');
 const shim = require('../vendor/greenlock-express/greenlock-shim.js');
 const greenlock = require('../vendor/greenlock-express/greenlock-express.js');
-
-// Roster turns isolation off on Bun: a child's HTTPS server cannot adopt a socket passed between processes there.
-const skipOnBun = Roster.isBunRuntime && 'site isolation is disabled on Bun';
 
 const REPORT_SITE = `module.exports = () => (req, res) => res.end(JSON.stringify({
     pid: process.pid, address: req.socket.remoteAddress, header: req.headers['x-test'] || null, host: req.headers.host
@@ -67,7 +65,7 @@ async function startProduction(t, sites, { certificates = [], issue = async () =
         ready(callback) {
             setImmediate(() => callback({
                 httpServer: () => http.createServer(),
-                httpsServer: (options, handler) => https.createServer({ ...options, SNICallback: roster.sniCallback() }, handler)
+                httpsServer: (options, handler) => createHttpsServer({ ...options, SNICallback: roster.sniCallback() }, handler)
             }));
             return this;
         }
@@ -113,7 +111,7 @@ function isRunning(pid) {
     }
 }
 
-it('routes each SNI host to its own process with the client address and headers intact', { timeout: 20000, skip: skipOnBun }, async t => {
+it('routes each SNI host to its own process with the client address and headers intact', { timeout: 20000 }, async t => {
     const { port } = await startProduction(t, {
         'a.example.com': REPORT_SITE,
         'b.example.com': REPORT_SITE,
@@ -136,7 +134,7 @@ it('routes each SNI host to its own process with the client address and headers 
     assert.equal(redirect.headers.location, 'https://a.example.com/path');
 });
 
-it('keeps serving in the same worker when a connection arrives without a socket', { timeout: 20000, skip: skipOnBun }, async t => {
+it('keeps serving in the same worker when a connection arrives without a socket', { timeout: 20000 }, async t => {
     const { roster, port } = await startProduction(t, {
         'disconnected.example.com': `${REPORT_SITE}
             process.on('message', message => {
@@ -213,7 +211,7 @@ it('keeps serving other sites while one blocks its event loop', { timeout: 20000
     assert.equal((await blocked).body, 'done');
 });
 
-it('restarts a crashed site while the others keep serving', { timeout: 20000, skip: skipOnBun }, async t => {
+it('restarts a crashed site while the others keep serving', { timeout: 20000 }, async t => {
     const { port } = await startProduction(t, {
         'fragile.example.com': `module.exports = () => (req, res) => {
             if (req.url === '/crash') setImmediate(() => { throw new Error('site crashed'); });
@@ -233,7 +231,7 @@ it('restarts a crashed site while the others keep serving', { timeout: 20000, sk
     assert.notEqual(restartedPid, firstPid);
 });
 
-it('delivers WebSocket upgrades to the isolated site', { timeout: 20000, skip: skipOnBun }, async t => {
+it('delivers WebSocket upgrades to the isolated site', { timeout: 20000 }, async t => {
     const { port } = await startProduction(t, {
         'ws.example.com': `module.exports = server => {
             server.on('upgrade', (req, socket) => {
@@ -256,7 +254,7 @@ it('delivers WebSocket upgrades to the isolated site', { timeout: 20000, skip: s
     assert.equal(payload, 'ping');
 });
 
-it('closes isolated sites after their hooks run, reports hook errors, and stops their processes', { timeout: 20000, skip: skipOnBun }, async t => {
+it('closes isolated sites after their hooks run, reports hook errors, and stops their processes', { timeout: 20000 }, async t => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-isolation-marker-')), 'closed');
     t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
     const { roster, port } = await startProduction(t, {
@@ -303,7 +301,7 @@ it('issues missing certificates for isolated sites through the main process', { 
     assert.deepEqual(issued, ['fresh.example.com']);
 });
 
-it('isolates directory sites in local mode, including aliases and request plugins', { timeout: 20000, skip: skipOnBun }, async t => {
+it('isolates directory sites in local mode, including aliases and request plugins', { timeout: 20000 }, async t => {
     const { wwwPath } = createWww(t, { 'site.example': REPORT_SITE, 'other.example': REPORT_SITE });
     const roster = new Roster({ local: true, wwwPath, minLocalPort: 19300, maxLocalPort: 19349 });
     t.after(() => roster.close().catch(() => {}));
@@ -342,7 +340,7 @@ it('keeps every site in the main process when isolation is disabled', { timeout:
     assert.equal(JSON.parse((await localGet(port)).body).pid, process.pid);
 });
 
-it('rejects request plugins that cannot be recreated in isolated processes', { timeout: 20000, skip: skipOnBun }, async t => {
+it('rejects request plugins that cannot be recreated in isolated processes', { timeout: 20000 }, async t => {
     const { wwwPath } = createWww(t, { 'plugin.example': REPORT_SITE });
     const roster = new Roster({ local: true, wwwPath, minLocalPort: 19370, maxLocalPort: 19379 });
     t.after(() => roster.close().catch(() => {}));
@@ -400,7 +398,7 @@ it('drains isolated sites on a signal sent to the whole process group', { timeou
     assert.equal(await waitForExit(sitePid), true);
 });
 
-it('closes isolated sites when the main process dies without closing', { timeout: 20000, skip: skipOnBun }, async t => {
+it('closes isolated sites when the main process dies without closing', { timeout: 20000 }, async t => {
     const { root, wwwPath } = createWww(t, {});
     const marker = path.join(root, 'closed');
     createSite(wwwPath, 'hook.example', hookSite(marker));
@@ -413,6 +411,7 @@ it('closes isolated sites when the main process dies without closing', { timeout
 
 function socketSite(server, marker, start = 'async start() {}') {
     return `const fs = require('fs');
+const { createHttpsServer, acceptTlsConnection } = require(${JSON.stringify(path.join(__dirname, '..', 'index.js'))});
 let server = ${server};
 module.exports = {
     ${start},
@@ -420,7 +419,7 @@ module.exports = {
         fs.writeFileSync(${JSON.stringify(marker)} + '.head', String(head.length));
         // A ClientHello read by Roster goes back on the stream; a local connection arrives paused.
         if (head.length > 0) socket.unshift(head);
-        server.emit('connection', socket);
+        acceptTlsConnection(server, socket);
         if (head.length === 0) socket.resume();
     },
     reply(req, res) {
@@ -432,13 +431,13 @@ module.exports = {
 };`;
 }
 
-it('hands raw client sockets with their ClientHello to a socket site that terminates TLS', { timeout: 20000, skip: skipOnBun }, async t => {
+it('hands raw client sockets with their ClientHello to a socket site that terminates TLS', { timeout: 20000 }, async t => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
     t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
     // The site gets its certificate from Roster's store through start(), not from files it reads.
     const start = `async start({ certificate }) {
         const pems = await certificate('raw.example.com');
-        server = require('https').createServer(pems, (req, res) => module.exports.reply(req, res));
+        server = createHttpsServer(pems, (req, res) => module.exports.reply(req, res));
     }`;
     const { roster, port } = await startProduction(t, {
         'raw.example.com': socketSite('null', marker, start),
@@ -455,13 +454,13 @@ it('hands raw client sockets with their ClientHello to a socket site that termin
     assert.equal(isRunning(raw.pid), false);
 });
 
-it('issues a missing certificate through the main process when a socket site asks for it', { timeout: 20000, skip: skipOnBun }, async t => {
+it('issues a missing certificate through the main process when a socket site asks for it', { timeout: 20000 }, async t => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
     t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
     const store = path.join(path.dirname(marker), 'greenlock.d');
     const issued = [];
     const start = `async start({ certificate }) {
-        server = require('https').createServer(await certificate('fresh.example.com'), (req, res) => module.exports.reply(req, res));
+        server = createHttpsServer(await certificate('fresh.example.com'), (req, res) => module.exports.reply(req, res));
     }`;
     const { port } = await startProduction(t, { 'fresh.example.com': socketSite('null', marker, start) }, {
         options: { greenlockStorePath: store },
@@ -474,7 +473,7 @@ it('issues a missing certificate through the main process when a socket site ask
     assert.notEqual(JSON.parse((await get(port, 'fresh.example.com')).body).pid, process.pid);
 });
 
-it('gives a socket site plain connections on its local port', { timeout: 20000, skip: skipOnBun }, async t => {
+it('gives a socket site plain connections on its local port', { timeout: 20000 }, async t => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'roster-socket-site-')), 'closed');
     t.after(() => fs.rmSync(path.dirname(marker), { recursive: true, force: true }));
     const { wwwPath } = createWww(t, {

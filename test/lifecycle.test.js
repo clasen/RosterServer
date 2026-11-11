@@ -417,10 +417,7 @@ it('handles errors from virtual listeners and invalid async plugins', async t =>
     assert.equal((await request(server)).status, 500);
 });
 
-// Bun takes the file-based TLS branch instead; test/bun-runtime.test.js covers it.
-it('uses one certificate runtime and waits for production listeners', {
-    skip: Roster.isBunRuntime && 'Bun serves HTTPS from certificate files instead of Greenlock'
-}, async t => {
+it('uses one certificate runtime and waits for production listeners', async t => {
     const shim = require('../vendor/greenlock-express/greenlock-shim.js');
     const greenlock = require('../vendor/greenlock-express/greenlock-express.js');
     const roster = createRoster(t, { local: false });

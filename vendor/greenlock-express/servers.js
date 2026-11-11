@@ -52,7 +52,8 @@ Servers.create = function(greenlock, onError) {
     };
     servers.httpsServer = function(secureOpts, defaultApp) {
         return servers._httpsServer(secureOpts, defaultApp, function(secureOpts, fn) {
-            return require("https").createServer(secureOpts, fn);
+            // Roster's factory keeps per-host SNI working on Bun, whose https.Server ignores SNICallback.
+            return require("../../lib/https-server.js").createHttpsServer(secureOpts, fn);
         });
     };
     servers._httpsServer = function(secureOpts, defaultApp, createSecureServer) {

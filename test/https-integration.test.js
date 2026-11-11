@@ -9,9 +9,6 @@ const https = require('node:https');
 const { execFileSync } = require('node:child_process');
 const Roster = require('../index.js');
 
-// Bun's node:https never calls SNICallback, so these per-handshake certificate checks only apply on Node.
-const skipOnBun = Roster.isBunRuntime && 'Bun does not call SNICallback';
-
 async function createRoster(t) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-https-'));
     const roster = new Roster({
@@ -69,7 +66,7 @@ function request(server, host, servername = host) {
     });
 }
 
-it('routes real HTTPS requests using SNI, wildcard storage, and exact host precedence', { timeout: 10000, skip: skipOnBun }, async t => {
+it('routes real HTTPS requests using SNI, wildcard storage, and exact host precedence', { timeout: 10000 }, async t => {
     const roster = await createRoster(t);
     certificate(roster, 'example.com', 1);
     certificate(roster, '_wildcard_.example.com', 2);
@@ -86,7 +83,7 @@ it('routes real HTTPS requests using SNI, wildcard storage, and exact host prece
     assert.equal(server.listenerCount('upgrade'), 0);
 });
 
-it('reloads certificates on fresh TLS handshakes and recovers from invalid PEM files', { timeout: 10000, skip: skipOnBun }, async t => {
+it('reloads certificates on fresh TLS handshakes and recovers from invalid PEM files', { timeout: 10000 }, async t => {
     const roster = await createRoster(t);
     const directory = certificate(roster, 'example.com', 1);
     const server = await listen(t, await roster.createServingHttpsServer({ servername: 'example.com' }));
@@ -139,7 +136,7 @@ it('serving-only creation never issues a missing certificate', async t => {
     assert.equal(issuance.mock.callCount(), 0);
 });
 
-it('resolves a missing SNI certificate through the shared issuer', { timeout: 10000, skip: skipOnBun }, async t => {
+it('resolves a missing SNI certificate through the shared issuer', { timeout: 10000 }, async t => {
     const roster = await createRoster(t);
     certificate(roster, 'example.com', 1);
     const issuance = t.mock.fn(async ({ servername }) => { certificate(roster, servername, 6); });

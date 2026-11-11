@@ -1,13 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const https = require('https');
 const net = require('net');
 const tls = require('tls');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
+const { createHttpsServer, acceptTlsConnection, isBunRuntime } = require('./lib/https-server.js');
 const { locateSiteEntry, resolveSiteApp, isSocketSite } = require('./lib/resolve-site-app.js');
 const { IsolatedSite } = require('./lib/isolated-site.js');
 const { parseClientHello } = require('./lib/client-hello.js');
@@ -57,8 +57,6 @@ function invokeRequest(handler, req, res) {
         requestError(error, res);
     }
 }
-
-const isBunRuntime = typeof Bun !== 'undefined' || (typeof process !== 'undefined' && process.release?.name === 'bun');
 
 // CRC32 implementation for deterministic port assignment
 function crc32(str) {
@@ -372,9 +370,6 @@ class Roster {
         }
         this.disableWildcard = parseBooleanFlag(options.disableWildcard, false);
         this.combineWildcardCerts = parseBooleanFlag(options.combineWildcardCerts, false);
-        if (isBunRuntime && this.combineWildcardCerts) {
-            log.info('Bun runtime detected: combined wildcard certificates enabled (SNI bypass)');
-        }
 
         this.skipLocalCheck = parseBooleanFlag(options.skipLocalCheck, true);
         this.autoCertificates = parseBooleanFlag(options.autoCertificates, true);
@@ -1015,7 +1010,7 @@ class Roster {
                 return;
             }
             socket.unshift(head);
-            server.emit('connection', socket);
+            acceptTlsConnection(server, socket);
         };
         socket.on('data', read);
     }
@@ -1488,7 +1483,8 @@ class Roster {
                 Promise.allSettled([...this._certificateChecks.values(), ...this._contextLoads.values()])
             ]));
             if (isBunRuntime) {
-                for (const server of this._ownedServers) server.closeAllConnections();
+                // Isolation routers are plain TCP servers; their sockets are in _sockets.
+                for (const server of this._ownedServers) server.closeAllConnections?.();
                 await wait(Promise.all([...this._ownedServers].map(closeServer)));
             }
 
@@ -1582,7 +1578,7 @@ class Roster {
             ? await this.ensureCertificate(normalizedServername)
             : this.loadCertificate(normalizedServername);
 
-        const server = this._configureSiteServer(https.createServer({
+        const server = this._configureSiteServer(createHttpsServer({
             minVersion: this.tlsMinVersion,
             maxVersion: this.tlsMaxVersion,
             ...tlsOptions,
@@ -1661,13 +1657,7 @@ class Roster {
         if (this._closing) return Promise.reject(new Error('Roster is closing or closed'));
         if (!this._startPromise) {
             // Isolation requires Roster to own the listeners, so only start() initializes for it.
-            if (this.isolation && !this._initPromise) {
-                if (isBunRuntime) {
-                    log.warn('⚠️  Bun runtime detected: site isolation is not supported; all sites run in the main process');
-                } else {
-                    this._isolate = true;
-                }
-            }
+            if (this.isolation && !this._initPromise) this._isolate = true;
             this._startPromise = this._start().catch(async error => {
                 if (!this._closing) {
                     try { await this.close(); } catch (cleanupError) {
@@ -1705,7 +1695,6 @@ class Roster {
         this._assertOpen();
         {
             const httpServer = glx.httpServer();
-            const bunTlsHotReloadHandlers = [];
 
             await this._listen(httpServer, 80, this.hostname);
             log.info('HTTP server listening on port 80');
@@ -1717,184 +1706,28 @@ class Roster {
                 const portData = this._sitesByPort[port] || { virtualServers: {}, appHandlers: {} };
                 const dispatcher = this._createDispatcher(portData);
                 const upgradeHandler = this._createUpgradeHandler(portData);
+                const tlsOpts = { minVersion: this.tlsMinVersion, maxVersion: this.tlsMaxVersion };
 
-                const issueAndReloadPemsForServername = async (servername) => {
-                    const host = this._normalizeHostInput(servername).trim().toLowerCase();
-                    if (!host) return null;
-
-                    let pems = this._resolvePemsForServername(host);
-                    if (pems) return pems;
-
-                    try {
-                        await this._checkCertificate(host);
-                    } catch (error) {
-                        log.warn(`⚠️  Greenlock issuance failed for ${host}: ${error?.message || error}`);
-                    }
-
-                    pems = this._resolvePemsForServername(host);
-                    if (pems) return pems;
-
-                    const wildcardSubject = wildcardSubjectForHost(host);
-                    const zone = wildcardSubject ? wildcardRoot(wildcardSubject) : null;
-                    if (zone) {
-                        const bootstrapHost = `bun-bootstrap.${zone}`;
-                        try {
-                            await this._checkCertificate(bootstrapHost);
-                        } catch (error) {
-                            log.warn(`⚠️  Greenlock wildcard bootstrap failed for ${bootstrapHost}: ${error?.message || error}`);
-                        }
-                        pems = this._resolvePemsForServername(host);
-                    }
-
-                    return pems;
-                };
-
-                const ensureBunDefaultPems = async (primaryDomain) => {
-                    let pems = await issueAndReloadPemsForServername(primaryDomain);
-
-                    const needsWildcard = this.combineWildcardCerts
-                        && this.wildcardZones.has(primaryDomain)
-                        && this.dnsChallenge;
-
-                    if (pems && needsWildcard && !certCoversName(pems.cert, `*.${primaryDomain}`)) {
-                        log.warn(`⚠️  Existing cert for ${primaryDomain} lacks *.${primaryDomain} SAN — clearing stale cert for combined re-issuance`);
-                        const certDir = path.join(this.greenlockStorePath, 'live', primaryDomain);
-                        try { fs.rmSync(certDir, { recursive: true, force: true }); } catch {}
-                        pems = null;
-                    }
-
-                    if (pems) return pems;
-
-                    const certSubject = primaryDomain.startsWith('*.') ? wildcardRoot(primaryDomain) : primaryDomain;
-                    log.warn(`⚠️  Bun: requesting ${needsWildcard ? 'combined wildcard' : ''} certificate for ${certSubject} via Greenlock before HTTPS bind`);
-                    try {
-                        await this._checkCertificate(certSubject);
-                    } catch (error) {
-                        log.error(`❌ Failed to obtain certificate for ${certSubject} under Bun:`, error?.message || error);
-                    }
-
-                    pems = this._resolvePemsForServername(primaryDomain);
-                    if (pems) return pems;
-
-                    throw new Error(
-                        `Bun runtime could not load TLS certificate files for ${primaryDomain}. ` +
-                        `Refusing to start HTTPS on port ${portNum} to avoid serving invalid TLS.`
-                    );
-                };
-
-                // Bun never calls SNICallback, so a server built only on it fails every handshake;
-                // every Bun port needs a default certificate loaded from files.
-                if (portNum === this.defaultPort || isBunRuntime) {
-                    const tlsOpts = { minVersion: this.tlsMinVersion, maxVersion: this.tlsMaxVersion };
-                    let httpsServer;
-
-                    if (isBunRuntime) {
-                        const primaryDomain = Object.keys(portData.virtualServers)[0];
-                        let defaultPems = await ensureBunDefaultPems(primaryDomain);
-                        let defaultContext = tls.createSecureContext(defaultPems);
-                        httpsServer = https.createServer({
-                            ...tlsOpts,
-                            key: defaultPems.key,
-                            cert: defaultPems.cert,
-                            SNICallback: (servername, callback) => {
-                                const resolveContext = async () => {
-                                    const cached = await this._resolveSecureContext(servername);
-                                    if (cached) return cached;
-                                    const pems = await issueAndReloadPemsForServername(servername);
-                                    this._assertOpen();
-                                    return pems ? this._getSecureContext(servername, false) : defaultContext;
-                                };
-                                resolveContext().then(context => callback(null, context), callback);
-                            }
-                        }, dispatcher);
-                        const reloadBunDefaultTls = async (servername, reason) => {
-                            const nextPems = await issueAndReloadPemsForServername(servername);
-                            if (!nextPems) return false;
-                            this._assertOpen();
-                            defaultPems = nextPems;
-                            defaultContext = tls.createSecureContext(defaultPems);
-                            if (typeof httpsServer.setSecureContext === 'function') {
-                                try {
-                                    httpsServer.setSecureContext({ key: defaultPems.key, cert: defaultPems.cert });
-                                    log.info(`🔄 Bun TLS default certificate reloaded on port ${portNum} (${reason})`);
-                                } catch (error) {
-                                    log.warn(`⚠️  Failed to hot-reload Bun TLS context on port ${portNum}: ${error?.message || error}`);
-                                }
-                            }
-                            return true;
-                        };
-                        bunTlsHotReloadHandlers.push(reloadBunDefaultTls);
-                        log.warn(`⚠️  Bun runtime detected: using file-based TLS with SNI for ${primaryDomain} on port ${portNum}`);
-                    } else {
-                        httpsServer = glx.httpsServer(tlsOpts, dispatcher);
-                    }
-
-                    httpsServer.on('upgrade', upgradeHandler);
-
-                    await this._listenSite(httpsServer, portNum);
-                    log.info(`HTTPS server listening on port ${portNum}`);
+                let httpsServer;
+                if (portNum === this.defaultPort) {
+                    httpsServer = glx.httpsServer(tlsOpts, dispatcher);
                 } else {
-                    const httpsOptions = {
-                        minVersion: this.tlsMinVersion,
-                        maxVersion: this.tlsMaxVersion,
+                    httpsServer = createHttpsServer({
+                        ...tlsOpts,
                         SNICallback: (servername, callback) => {
                             this._getSecureContext(servername, false).then(context => callback(null, context), callback);
                         }
-                    };
-
-                    const httpsServer = https.createServer(httpsOptions, dispatcher);
-                    httpsServer.on('upgrade', upgradeHandler);
-
+                    }, dispatcher);
                     httpsServer.on('tlsClientError', (error) => {
                         if (!error.message.includes('http request')) {
                             log.error(`TLS error on port ${portNum}:`, error.message);
                         }
                     });
-
-                    await this._listenSite(httpsServer, portNum);
-                    log.info(`HTTPS server listening on port ${portNum}`);
                 }
-            }
+                httpsServer.on('upgrade', upgradeHandler);
 
-            if (isBunRuntime && !this.combineWildcardCerts && this.wildcardZones.size > 0 && bunTlsHotReloadHandlers.length > 0) {
-                const retryDelayMs = Number.isFinite(Number(process.env.ROSTER_BUN_WILDCARD_PREWARM_RETRY_MS))
-                    ? Math.max(1000, Number(process.env.ROSTER_BUN_WILDCARD_PREWARM_RETRY_MS))
-                    : 30000;
-                const maxAttempts = Number.isFinite(Number(process.env.ROSTER_BUN_WILDCARD_PREWARM_MAX_ATTEMPTS))
-                    ? Math.max(0, Number(process.env.ROSTER_BUN_WILDCARD_PREWARM_MAX_ATTEMPTS))
-                    : 0;
-
-                for (const zone of this.wildcardZones) {
-                    const bootstrapHost = `bun-bootstrap.${zone}`;
-                    const attemptPrewarm = async (attempt = 1) => {
-                        if (this._closing) return;
-                        try {
-                            log.warn(`⚠️  Bun runtime detected: prewarming wildcard certificate via ${bootstrapHost} (attempt ${attempt})`);
-                            let reloaded = false;
-                            for (const reloadTls of bunTlsHotReloadHandlers) {
-                                reloaded = (await reloadTls(bootstrapHost, `prewarm ${bootstrapHost} attempt ${attempt}`)) || reloaded;
-                            }
-                            if (!reloaded) {
-                                throw new Error(`No certificate could be loaded for ${bootstrapHost}`);
-                            }
-                            log.info(`✅ Bun wildcard prewarm succeeded for ${zone} on attempt ${attempt}`);
-                        } catch (error) {
-                            log.warn(`⚠️  Bun wildcard prewarm failed for ${zone} (attempt ${attempt}): ${error?.message || error}`);
-                            if (maxAttempts > 0 && attempt >= maxAttempts) {
-                                log.warn(`⚠️  Bun wildcard prewarm stopped for ${zone} after ${attempt} attempts`);
-                                return;
-                            }
-                            if (this._closing) return;
-                            const timer = setTimeout(() => {
-                                this._retryTimers.delete(timer);
-                                attemptPrewarm(attempt + 1).catch(() => {});
-                            }, retryDelayMs);
-                            this._retryTimers.add(timer);
-                        }
-                    };
-
-                    attemptPrewarm().catch(() => {});
-                }
+                await this._listenSite(httpsServer, portNum);
+                log.info(`HTTPS server listening on port ${portNum}`);
             }
         }
         return this;
@@ -1903,6 +1736,8 @@ class Roster {
 
 module.exports = Roster;
 module.exports.isBunRuntime = isBunRuntime;
+module.exports.createHttpsServer = createHttpsServer;
+module.exports.acceptTlsConnection = acceptTlsConnection;
 module.exports.pluginSource = PLUGIN_SOURCE;
 module.exports.wildcardRoot = wildcardRoot;
 module.exports.hostMatchesWildcard = hostMatchesWildcard;
