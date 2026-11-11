@@ -8,7 +8,7 @@ const { EventEmitter } = require('events');
 const Greenlock = require('./vendor/greenlock-express/greenlock-express.js');
 const GreenlockShim = require('./vendor/greenlock-express/greenlock-shim.js');
 const { createHttpsServer, acceptTlsConnection, isBunRuntime } = require('./lib/https-server.js');
-const { locateSiteEntry, resolveSiteApp, isSocketSite } = require('./lib/resolve-site-app.js');
+const { locateSiteEntry, missingSiteEntryMessage, resolveSiteApp, isSocketSite } = require('./lib/resolve-site-app.js');
 const { IsolatedSite } = require('./lib/isolated-site.js');
 const { parseClientHello } = require('./lib/client-hello.js');
 const log = require('lemonlog')('roster');
@@ -445,7 +445,7 @@ class Roster {
             }
 
             if (!resolved) {
-                log.warn(`⚠️  No index file (js/mjs/cjs or index.html) found in ${domainPath}`);
+                log.warn(`⚠️  ${missingSiteEntryMessage(domainPath)}`);
                 continue;
             }
 
@@ -717,7 +717,7 @@ class Roster {
         if (typeof requestHandler === 'string') {
             requestHandler = path.resolve(requestHandler);
             if (!locateSiteEntry(requestHandler, { filename: this.filename })) {
-                throw new Error(`No index file (js/mjs/cjs or index.html) found in ${requestHandler}`);
+                throw new Error(missingSiteEntryMessage(requestHandler));
             }
         } else if (typeof requestHandler !== 'function') {
             throw new Error('requestHandler must be a function or a site directory path');

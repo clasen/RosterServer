@@ -3,6 +3,7 @@
     "version": "3.5.0",
     "description": "👾 RosterServer - A domain host router to host multiple HTTPS.",
     "main": "index.js",
+    "types": "index.d.ts",
     "scripts": {
         "test": "node --test 'test/**/*.test.js'",
         "test:bun": "bun test ./test"

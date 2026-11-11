@@ -8,7 +8,7 @@ Host multiple domains behind one Node.js entry point, with HTTPS certificates ma
 pnpm add roster-server
 ```
 
-`npm install roster-server` and `bun add roster-server` are also supported installation commands. The package exports a CommonJS constructor that can also be imported as an ESM default. Server examples below use `.mjs`; site examples use `.cjs`.
+`npm install roster-server` and `bun add roster-server` are also supported installation commands. The package exports a CommonJS constructor that can also be imported as an ESM default, and ships TypeScript declarations. Server examples below use `.mjs`; site examples use `.cjs`.
 
 ## Quick start: local HTTP
 
@@ -56,7 +56,7 @@ www/
 └── *.example.com/index.cjs
 ```
 
-For each directory, discovery checks `index.js`, `index.mjs`, then `index.cjs`. If none exists, `index.html` enables static serving. `filename` changes the script basename; the static entry remains `index.html`. Match `.js` exports to the site's package module type, or use `.cjs`/`.mjs` explicitly.
+For each directory, discovery checks `index.js`, `index.mjs`, `index.cjs`, `index.ts`, `index.mts`, then `index.cts`. If none exists, `index.html` enables static serving. `filename` changes the script basename; the static entry remains `index.html`. Match `.js` exports to the site's package module type, or use `.cjs`/`.mjs` explicitly.
 
 Discovery happens during `init()`. Register manual sites before initialization. Discovered sites use HTTPS port **443**, even when the instance's `port` is different; a discovered registration replaces a manual registration for the same domain and port. Loading new sites requires a new instance or process restart.
 
@@ -88,6 +88,20 @@ module.exports = () => {
 The virtual server supports request/upgrade listener integration; it is not a separately listening TCP server. Process isolation comes from [site isolation](#site-isolation), not from the virtual server. Request listeners own their requests, including asynchronous responses. Roster does not invoke the returned handler just because a listener has not finished. Wrappers can capture the site's HTTP fallback through `server.listeners('request')`.
 
 Thrown or rejected request-handler errors produce a `500`, or destroy the response if headers were already sent.
+
+A site written in TypeScript, saved as `www/example.com/index.ts`:
+
+```typescript
+import type { SiteFactory } from 'roster-server';
+
+const site: SiteFactory = server => async (req, res) => {
+    res.end(`Hello from ${server.domain}`);
+};
+
+export default site;
+```
+
+Roster loads TypeScript entries without a build step, relying on the runtime to strip types: Bun, or Node.js 22.18 and later. Node.js only strips type annotations, so it rejects syntax that needs transformation, such as `enum` and parameter properties, and relative imports must name the `.ts` file.
 
 ### Socket.IO and resource cleanup
 

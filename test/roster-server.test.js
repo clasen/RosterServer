@@ -682,6 +682,33 @@ describe('Roster loadSites', () => {
         }
     });
 
+    for (const isolation of [true, false]) {
+        it(`serves TypeScript site entries (isolation ${isolation})`, { timeout: 20000 }, async () => {
+            const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
+            const wwwPath = path.join(tmpDir, 'www');
+            const entries = {
+                'ts.example': ['index.ts', 'export default (): ((req: unknown, res: any) => void) => (req, res) => { const body: string = "ts"; res.end(body); };'],
+                'mts.example': ['index.mts', 'export default () => (req: unknown, res: { end(body: string): void }) => res.end("mts");'],
+                'cts.example': ['index.cts', 'module.exports = () => (req: unknown, res: { end(body: string): void }) => res.end("cts");']
+            };
+            for (const [domain, [file, source]] of Object.entries(entries)) {
+                fs.mkdirSync(path.join(wwwPath, domain), { recursive: true });
+                fs.writeFileSync(path.join(wwwPath, domain, file), source, 'utf8');
+            }
+            const roster = new Roster({ wwwPath, local: true, isolation, minLocalPort: 19230, maxLocalPort: 19239 });
+            try {
+                await roster.start();
+                for (const domain of Object.keys(entries)) {
+                    const result = await httpGet('localhost', roster.domainPorts[domain], '/');
+                    assert.strictEqual(result.body, domain.split('.')[0]);
+                }
+            } finally {
+                await closePortServers(roster);
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            }
+        });
+    }
+
     it('static site serves index.html for / in local mode', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-test-'));
         const wwwPath = path.join(tmpDir, 'www');

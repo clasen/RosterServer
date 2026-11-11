@@ -28,7 +28,7 @@ const roster = new Roster({ local: true, wwwPath: path.resolve('www') });
 roster.register('example.com', () => (req, res) => res.end('Hello'));
 ```
 
-- Discovery tries `index.js`, `index.mjs`, then `index.cjs`; use the module format appropriate to the application's package. Without an entry script, `index.html` enables static serving.
+- Discovery tries `index.js`, `index.mjs`, `index.cjs`, `index.ts`, `index.mts`, then `index.cts`; TypeScript entries need Bun or Node.js 22.18+ type stripping, and `SiteFactory` types a factory; use the module format appropriate to the application's package. Without an entry script, `index.html` enables static serving.
 - `filename` changes the script basename only. `basePath` supplies default directories; it does not rebase explicitly supplied relative paths. Prefer absolute paths.
 - Discovered sites stay on HTTPS **443**, even with another default `port`. Discovery replaces a manual registration for the same domain/port; distinct ports coexist.
 - Manual `register('api.example.com:8443', factory)` selects that port. Exact hosts precede wildcard matches; `*.example.com` does not match the apex.
