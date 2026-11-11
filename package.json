@@ -37,6 +37,9 @@
         "url": "https://github.com/clasen/RosterServer/issues"
     },
     "homepage": "https://github.com/clasen/RosterServer#readme",
+    "engines": {
+        "bun": ">=1.4.3"
+    },
     "dependencies": {
         "@greenlock/manager": "^3.1.0",
         "@root/acme": "^3.1.0",

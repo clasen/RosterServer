@@ -13,6 +13,7 @@ const { execFileSync } = require('node:child_process');
 const Roster = require('../index.js');
 const { createHttpsServer, acceptTlsConnection } = Roster;
 const { parseClientHello } = require('../lib/client-hello.js');
+const { assertSupportedBunVersion } = require('../lib/https-server.js');
 
 const pems = {};
 before(() => {
@@ -54,6 +55,16 @@ function get(port, servername, agent = false) {
 
 it('reports the runtime it is loaded in', () => {
     assert.equal(Roster.isBunRuntime, typeof process.versions.bun === 'string');
+});
+
+it('rejects Bun versions whose TLS server cannot replace certificates', () => {
+    for (const version of ['1.4.3', '1.4.10', '1.5.0', '2.0.0', '1.4.4-canary.20261111.1']) {
+        assert.doesNotThrow(() => assertSupportedBunVersion(version), version);
+    }
+    for (const version of ['1.4.2', '1.3.12', '0.9.9']) {
+        assert.throws(() => assertSupportedBunVersion(version), /requires Bun 1\.4\.3 or later/, version);
+    }
+    assert.throws(() => assertSupportedBunVersion(undefined), /Cannot determine the Bun version/);
 });
 
 it('selects the certificate of each host through SNICallback', async t => {

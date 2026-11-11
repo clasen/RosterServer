@@ -8,7 +8,7 @@ Host multiple domains behind one Node.js entry point, with HTTPS certificates ma
 pnpm add roster-server
 ```
 
-`npm install roster-server` and `bun add roster-server` are also supported installation commands. The package exports a CommonJS constructor that can also be imported as an ESM default, and ships TypeScript declarations. Server examples below use `.mjs`; site examples use `.cjs`.
+`npm install roster-server` and `bun add roster-server` are also supported installation commands. On Bun, Roster requires Bun 1.4.3 or later and refuses to load on older versions. The package exports a CommonJS constructor that can also be imported as an ESM default, and ships TypeScript declarations. Server examples below use `.mjs`; site examples use `.cjs`.
 
 ## Quick start: local HTTP
 
@@ -394,7 +394,7 @@ Enable `trustProxy` only behind a trusted proxy that overwrites `X-Forwarded-For
 | Certificates are missing in a worker | Ensure the manager has issued them into the same store before worker startup. `init()` alone does not bind ACME HTTP. |
 | Shutdown times out | Inspect the aggregated errors and site hooks, active requests, and pending certificate operations. |
 
-Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun, and the test suite runs on both. Bun's `node:https` server never invokes `SNICallback`, lacks `addContext()` and `setSecureContext()`, and cannot adopt a socket passed to `emit('connection')` (checked on Bun 1.3.4 and 1.4.4). On Bun, Roster therefore terminates TLS with a `tls.Server` in front of an `http.Server`, so per-host certificates, certificate reload, custom HTTPS ports and site isolation behave as on Node. The visible difference is the server's class: on Bun, `Roster.createHttpsServer()`, `createManagedHttpsServer()` and `createServingHttpsServer()` return an `http.Server` whose `listen()`, `close()`, `address()` and certificate methods act on the inner `tls.Server`, so `instanceof https.Server` is `false` there.
+Local integration checks cover Node HTTP/TLS and Socket.IO polling/WebSocket shutdown on Node and Bun, and the test suite runs on both. Bun's `node:https` server never invokes `SNICallback`, lacks `addContext()` and `setSecureContext()`, and cannot adopt a socket passed to `emit('connection')` (checked on Bun 1.3.4 through 1.4.4). Before Bun 1.4.3, `tls.Server` also ignores `setSecureContext()`, so Roster requires Bun 1.4.3 or later. On Bun, Roster therefore terminates TLS with a `tls.Server` in front of an `http.Server`, so per-host certificates, certificate reload, custom HTTPS ports and site isolation behave as on Node. The visible difference is the server's class: on Bun, `Roster.createHttpsServer()`, `createManagedHttpsServer()` and `createServingHttpsServer()` return an `http.Server` whose `listen()`, `close()`, `address()` and certificate methods act on the inner `tls.Server`, so `instanceof https.Server` is `false` there.
 
 ## Agent skill and development
 
