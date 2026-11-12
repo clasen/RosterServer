@@ -23,9 +23,6 @@ importers:
       '@root/keypairs':
         specifier: ^0.10.0
         version: 0.10.3
-      '@root/request':
-        specifier: ^1.6.1
-        version: 1.9.2
       acme-dns-01-cli:
         specifier: ^3.0.7
         version: 3.0.7

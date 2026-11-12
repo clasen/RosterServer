@@ -5,7 +5,9 @@ var log = require('lemonlog')('greenlock');
 
 var ACME = require('@root/acme');
 var Greenlock = module.exports;
-var request = require('@root/request');
+var promisify = require('util').promisify;
+// Patched @root/request 1.9.2: upstream assigns ClientRequest#headers, which throws on Bun.
+var request = require('../request/request.js');
 var process = require('process');
 
 var G = Greenlock;
@@ -375,7 +377,8 @@ G.create = function(gconf) {
             notify: greenlock._notify,
             debug: greenlock._defaults.debug || args.debug,
             skipDryRun: gconf.skipDryRun || false,
-            skipChallengeTest: gconf.skipChallengeTest || false
+            skipChallengeTest: gconf.skipChallengeTest || false,
+            __request: promisify(request)
         });
 
         var dir = caches[dirUrl];

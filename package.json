@@ -46,7 +46,6 @@
         "@root/csr": "^0.8.1",
         "@root/encoding": "^1.0.1",
         "@root/keypairs": "^0.10.0",
-        "@root/request": "^1.6.1",
         "acme-dns-01-cli": "^3.0.7",
         "acme-http-01-standalone": "^3.0.5",
         "cert-info": "^1.5.1",
